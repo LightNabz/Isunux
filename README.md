@@ -53,6 +53,34 @@ This is step 2 of the plan we talked through. In rough order:
 Each of those is its own multi-day-to-multi-week arc. Don't rush to step 9,
 the fun part is actually steps 2-4.
 
+## Milestone 2 progress: GDT + IDT + exception handling
+
+- `kernel/gdt.c` / `gdt.h` — our own flat GDT (null, kernel code @ 0x08,
+  kernel data @ 0x10), replacing the one Limine hands us. Loaded with
+  `lgdt`, CS reloaded via the classic far-return trick since you can't
+  `mov` into CS directly.
+- `kernel/isr.asm` — one stub per CPU exception vector (0-31). Vectors
+  that push a hardware error code get one macro (`ISR_ERR`), the rest get
+  a dummy zero pushed so every frame has the same shape (`ISR_NOERR`).
+  All 32 fall through into `isr_common`, which saves every general
+  register, calls into C, restores, and `iretq`s back out.
+- `kernel/idt.c` / `idt.h` — builds a 256-entry IDT, wires vectors 0-31 to
+  the asm stubs, loads it with `lidt`. `interrupt_frame_t` in `idt.h` is
+  the register layout `exception_handler` receives — it has to match the
+  push order in `isr.asm` exactly, or you get garbage register dumps.
+- `kernel/exceptions.c` — the actual handler. Decodes the vector number
+  into a human name, prints vector/error-code/rip/cs/rflags over serial,
+  then halts. This is what turns a silent QEMU reset into an actual
+  readable crash report.
+- `kernel/serial.c` / `serial.h` — serial driver pulled out of kernel.c
+  into its own file, plus `serial_print_hex` / `serial_print_dec` for
+  dumping register values.
+
+`kernel.c` now calls `gdt_init()`, `idt_init()`, then deliberately
+triggers a runtime (not compile-time-foldable) divide-by-zero to prove
+the handler actually fires instead of the CPU triple-faulting and QEMU
+silently rebooting.
+
 ## ATTENTION
 
 I did this after I read OSTEP and merely out of curiosity and boredom, so don't expect much lol

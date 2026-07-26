@@ -28,15 +28,22 @@ LDFLAGS := -nostdlib \
 	-z max-page-size=0x1000 \
 	-T kernel/linker.ld
 
-SRCS := kernel/kernel.c
-OBJS := $(SRCS:.c=.o)
+C_SRCS := kernel/kernel.c kernel/serial.c kernel/gdt.c kernel/idt.c kernel/exceptions.c
+ASM_SRCS := kernel/isr.asm
+OBJS := $(C_SRCS:.c=.o) $(ASM_SRCS:.asm=.o)
+
+NASM := nasm
+NASMFLAGS := -f elf64
 
 .PHONY: all clean run iso
 
 all: $(KERNEL)
 
-%.o: %.c kernel/limine.h
+%.o: %.c kernel/limine.h kernel/*.h
 	$(CC) $(CFLAGS) -c $< -o $@
+
+%.o: %.asm
+	$(NASM) $(NASMFLAGS) $< -o $@
 
 $(KERNEL): $(OBJS) kernel/linker.ld
 	$(LD) $(LDFLAGS) $(OBJS) -o $(KERNEL)
