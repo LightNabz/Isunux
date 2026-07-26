@@ -29,6 +29,12 @@ extern void isr20(void); extern void isr21(void); extern void isr22(void); exter
 extern void isr24(void); extern void isr25(void); extern void isr26(void); extern void isr27(void);
 extern void isr28(void); extern void isr29(void); extern void isr30(void); extern void isr31(void);
 
+/* hardware IRQs, remapped to 32-47 by pic_remap() */
+extern void isr32(void); extern void isr33(void); extern void isr34(void); extern void isr35(void);
+extern void isr36(void); extern void isr37(void); extern void isr38(void); extern void isr39(void);
+extern void isr40(void); extern void isr41(void); extern void isr42(void); extern void isr43(void);
+extern void isr44(void); extern void isr45(void); extern void isr46(void); extern void isr47(void);
+
 static void idt_set_gate(uint8_t vec, void (*handler)(void), uint16_t selector, uint8_t type_attr) {
     uint64_t addr = (uint64_t)handler;
     idt[vec].offset_low  = addr & 0xFFFF;
@@ -52,6 +58,14 @@ void idt_init(void) {
      * ring 0, 64-bit interrupt gate. */
     for (int i = 0; i < 32; i++) {
         idt_set_gate((uint8_t)i, isr_stub_table[i], 0x08, 0x8E);
+    }
+
+    void (*irq_stub_table[16])(void) = {
+        isr32, isr33, isr34, isr35, isr36, isr37, isr38, isr39,
+        isr40, isr41, isr42, isr43, isr44, isr45, isr46, isr47,
+    };
+    for (int i = 0; i < 16; i++) {
+        idt_set_gate((uint8_t)(32 + i), irq_stub_table[i], 0x08, 0x8E);
     }
 
     idt_ptr.limit = sizeof(idt) - 1;

@@ -81,6 +81,37 @@ triggers a runtime (not compile-time-foldable) divide-by-zero to prove
 the handler actually fires instead of the CPU triple-faulting and QEMU
 silently rebooting.
 
+## Milestone 2.5
+
+- `kernel/pic.c` / `pic.h` — remaps the legacy 8259 PIC so IRQ0-15 land on
+  interrupt vectors 32-47 instead of their default 8-15 (which collide
+  with CPU exception vectors -- this MUST happen before `sti` or a timer
+  tick would look like a CPU exception). Also masks everything except
+  IRQ0 (timer), IRQ1 (keyboard), and IRQ2 (the master/slave cascade line,
+  has to stay unmasked or the slave PIC's interrupts can never get
+  through even though nothing's wired to it yet).
+- `kernel/pit.c` / `pit.h` — programs the 8253/8254 PIT channel 0 to fire
+  IRQ0 at a chosen frequency (100 Hz here, so a tick every 10ms).
+- `kernel/isr.asm` — extended with 16 more stubs (vectors 32-47) that
+  dispatch into `irq_common` / `irq_handler`, separate from the CPU
+  exception path since hardware IRQs never carry a CPU-pushed error code.
+- `kernel/irq.c` — the C-side dispatcher. Counts timer ticks (prints once
+  a second), reads keyboard scancodes off port 0x60 and decodes
+  pressed/released, sends EOI back to the PIC so it'll deliver the next
+  interrupt.
+- `kernel.c` now: gdt_init -> pic_remap -> idt_init -> pit_init -> `sti`.
+  Order matters -- PIC and IDT must both be fully set up before
+  interrupts are turned on.
+
+Verified for real, not just by code review: booted in QEMU with serial
+piped to a log file, then used QEMU's monitor to inject synthetic
+keypresses (`sendkey a`, `sendkey shift-b`) while the kernel was running.
+The keyboard IRQ handler correctly decoded scancodes 0x1e/0x9e (a
+down/up) and 0x2a/0x30/0xb0/0xaa (shift down, b down, b up, shift up),
+interleaved with the timer still ticking once a second in the
+background -- proof the interrupt path handles concurrent IRQs from two
+different devices correctly, not just one in isolation.
+
 ## ATTENTION
 
 I did this after I read OSTEP and merely out of curiosity and boredom, so don't expect much lol

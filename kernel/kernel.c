@@ -5,12 +5,12 @@
 #include "serial.h"
 #include "gdt.h"
 #include "idt.h"
+#include "pic.h"
+#include "pit.h"
 
-/* Tell Limine we're using base protocol revision 2. */
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
 
-/* Request/response region markers, required by the Limine boot protocol. */
 __attribute__((used, section(".requests_start_marker")))
 static volatile LIMINE_REQUESTS_START_MARKER;
 
@@ -19,38 +19,41 @@ static volatile LIMINE_REQUESTS_END_MARKER;
 
 static void hcf(void) {
     for (;;) {
-        asm volatile ("cli; hlt");
+        asm volatile ("hlt");
     }
 }
 
 void _start(void) {
     if (LIMINE_BASE_REVISION_SUPPORTED == false) {
-        hcf();
+        for (;;) { asm volatile ("cli; hlt"); }
     }
 
     serial_init();
     serial_print("========================================\n");
-    serial_print(" milestone 2: gdt + idt + exceptions\n");
+    serial_print(" milestone 2: gdt + idt + interrupts\n");
     serial_print("========================================\n");
 
     serial_print("[ok] serial initialized\n");
 
     gdt_init();
-    serial_print("[ok] gdt loaded (our own, not limine's)\n");
+    serial_print("[ok] gdt loaded\n");
+
+    /* IMPORTANT: remap the PIC and build the IDT *before* ever enabling
+     * interrupts with sti, or a stray IRQ could fire into an unmapped
+     * vector / collide with a CPU exception vector. */
+    pic_remap();
+    serial_print("[ok] pic remapped: irq0-7 -> vectors 32-39, irq8-15 -> 40-47\n");
 
     idt_init();
-    serial_print("[ok] idt loaded, 32 exception vectors wired\n");
+    serial_print("[ok] idt loaded: 32 exception vectors + 16 irq vectors\n");
 
-    serial_print("\nabout to trigger a real divide-by-zero on purpose...\n");
+    pit_init(100); /* 100 Hz -> a tick every 10ms */
+    serial_print("[ok] pit programmed for 100hz\n");
 
-    /* volatile so the compiler can't fold this at compile time -- we want
-     * an actual runtime #DE (vector 0) to prove the handler catches it. */
-    volatile uint64_t a = 42;
-    volatile uint64_t b = 0;
-    volatile uint64_t c = a / b;
-    (void)c;
+    serial_print("\nenabling interrupts now...\n\n");
+    asm volatile ("sti");
 
-    /* should never get here */
-    serial_print("if you see this, the exception did NOT fire. something's wrong.\n");
+    /* the timer should start ticking immediately. type on the keyboard
+     * (if you're running this interactively) to see scancodes. */
     hcf();
 }
