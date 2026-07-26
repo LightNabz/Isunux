@@ -53,65 +53,6 @@ This is step 2 of the plan we talked through. In rough order:
 Each of those is its own multi-day-to-multi-week arc. Don't rush to step 9,
 the fun part is actually steps 2-4.
 
-## Milestone 2 progress: GDT + IDT + exception handling
-
-- `kernel/gdt.c` / `gdt.h` — our own flat GDT (null, kernel code @ 0x08,
-  kernel data @ 0x10), replacing the one Limine hands us. Loaded with
-  `lgdt`, CS reloaded via the classic far-return trick since you can't
-  `mov` into CS directly.
-- `kernel/isr.asm` — one stub per CPU exception vector (0-31). Vectors
-  that push a hardware error code get one macro (`ISR_ERR`), the rest get
-  a dummy zero pushed so every frame has the same shape (`ISR_NOERR`).
-  All 32 fall through into `isr_common`, which saves every general
-  register, calls into C, restores, and `iretq`s back out.
-- `kernel/idt.c` / `idt.h` — builds a 256-entry IDT, wires vectors 0-31 to
-  the asm stubs, loads it with `lidt`. `interrupt_frame_t` in `idt.h` is
-  the register layout `exception_handler` receives — it has to match the
-  push order in `isr.asm` exactly, or you get garbage register dumps.
-- `kernel/exceptions.c` — the actual handler. Decodes the vector number
-  into a human name, prints vector/error-code/rip/cs/rflags over serial,
-  then halts. This is what turns a silent QEMU reset into an actual
-  readable crash report.
-- `kernel/serial.c` / `serial.h` — serial driver pulled out of kernel.c
-  into its own file, plus `serial_print_hex` / `serial_print_dec` for
-  dumping register values.
-
-`kernel.c` now calls `gdt_init()`, `idt_init()`, then deliberately
-triggers a runtime (not compile-time-foldable) divide-by-zero to prove
-the handler actually fires instead of the CPU triple-faulting and QEMU
-silently rebooting.
-
-## Milestone 2.5
-
-- `kernel/pic.c` / `pic.h` — remaps the legacy 8259 PIC so IRQ0-15 land on
-  interrupt vectors 32-47 instead of their default 8-15 (which collide
-  with CPU exception vectors -- this MUST happen before `sti` or a timer
-  tick would look like a CPU exception). Also masks everything except
-  IRQ0 (timer), IRQ1 (keyboard), and IRQ2 (the master/slave cascade line,
-  has to stay unmasked or the slave PIC's interrupts can never get
-  through even though nothing's wired to it yet).
-- `kernel/pit.c` / `pit.h` — programs the 8253/8254 PIT channel 0 to fire
-  IRQ0 at a chosen frequency (100 Hz here, so a tick every 10ms).
-- `kernel/isr.asm` — extended with 16 more stubs (vectors 32-47) that
-  dispatch into `irq_common` / `irq_handler`, separate from the CPU
-  exception path since hardware IRQs never carry a CPU-pushed error code.
-- `kernel/irq.c` — the C-side dispatcher. Counts timer ticks (prints once
-  a second), reads keyboard scancodes off port 0x60 and decodes
-  pressed/released, sends EOI back to the PIC so it'll deliver the next
-  interrupt.
-- `kernel.c` now: gdt_init -> pic_remap -> idt_init -> pit_init -> `sti`.
-  Order matters -- PIC and IDT must both be fully set up before
-  interrupts are turned on.
-
-Verified for real, not just by code review: booted in QEMU with serial
-piped to a log file, then used QEMU's monitor to inject synthetic
-keypresses (`sendkey a`, `sendkey shift-b`) while the kernel was running.
-The keyboard IRQ handler correctly decoded scancodes 0x1e/0x9e (a
-down/up) and 0x2a/0x30/0xb0/0xaa (shift down, b down, b up, shift up),
-interleaved with the timer still ticking once a second in the
-background -- proof the interrupt path handles concurrent IRQs from two
-different devices correctly, not just one in isolation.
-
 ## ATTENTION
 
 I did this after I read OSTEP and merely out of curiosity and boredom, so don't expect much lol

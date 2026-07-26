@@ -2,12 +2,11 @@
 #include "serial.h"
 #include "kutil.h"
 
-/* Static bitmap covering up to 4 GiB of physical RAM. That's plenty for
- * a hobby kernel running under QEMU with -m 256M/512M/1G, and a static
- * array means we don't need a working heap or HHDM access to stand this
- * up -- this is deliberately the simplest version that works. */
-#define MAX_PHYS_MEMORY   (4ULL * 1024 * 1024 * 1024)
-#define MAX_PAGES         (MAX_PHYS_MEMORY / PAGE_SIZE)
+/* Static bitmap covering PMM_TRACKED_PHYS_MEMORY of physical RAM (see
+ * pmm.h). That's plenty for a hobby kernel running under QEMU, and a
+ * static array means we don't need a working heap or HHDM access to
+ * stand this up -- deliberately the simplest version that works. */
+#define MAX_PAGES         (PMM_TRACKED_PHYS_MEMORY / PAGE_SIZE)
 #define BITMAP_SIZE_BYTES (MAX_PAGES / 8)
 
 static uint8_t bitmap[BITMAP_SIZE_BYTES];
@@ -95,6 +94,28 @@ uint64_t pmm_alloc_page(void) {
         }
     }
     return 0; /* out of memory */
+}
+
+uint64_t pmm_alloc_pages(uint64_t count) {
+    if (count == 0 || count > total_pages) return 0;
+
+    for (uint64_t start = 0; start + count <= total_pages; start++) {
+        uint64_t j = 0;
+        for (; j < count; j++) {
+            if (bitmap_test(start + j)) break; /* not free, this run doesn't work */
+        }
+        if (j == count) {
+            for (uint64_t k = 0; k < count; k++) {
+                bitmap_set(start + k);
+            }
+            free_pages -= count;
+            used_pages += count;
+            return start * PAGE_SIZE;
+        }
+        /* skip past the page that failed, no point rechecking it */
+        start += j;
+    }
+    return 0; /* no contiguous run big enough */
 }
 
 void pmm_free_page(uint64_t phys_addr) {

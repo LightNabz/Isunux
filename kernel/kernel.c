@@ -8,6 +8,8 @@
 #include "pic.h"
 #include "pit.h"
 #include "pmm.h"
+#include "vmm.h"
+#include "task.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -24,32 +26,42 @@ static volatile struct limine_memmap_request memmap_request = {
     .revision = 0,
 };
 
+__attribute__((used, section(".requests")))
+static volatile struct limine_hhdm_request hhdm_request = {
+    .id = LIMINE_HHDM_REQUEST,
+    .revision = 0,
+};
+
+__attribute__((used, section(".requests")))
+static volatile struct limine_kernel_address_request kaddr_request = {
+    .id = LIMINE_KERNEL_ADDRESS_REQUEST,
+    .revision = 0,
+};
+
 static void hcf(void) {
     for (;;) {
         asm volatile ("cli; hlt");
     }
 }
 
-static void print_memmap(struct limine_memmap_response *memmap) {
-    static const char *type_names[] = {
-        "usable", "reserved", "acpi reclaimable", "acpi nvs",
-        "bad memory", "bootloader reclaimable", "kernel/modules", "framebuffer",
-    };
-
-    serial_print("[memmap] ");
-    serial_print_dec(memmap->entry_count);
-    serial_print(" regions from limine:\n");
-
-    for (uint64_t i = 0; i < memmap->entry_count; i++) {
-        struct limine_memmap_entry *e = memmap->entries[i];
-        serial_print("  base ");
-        serial_print_hex(e->base);
-        serial_print("  len ");
-        serial_print_hex(e->length);
-        serial_print("  ");
-        serial_print(e->type < 8 ? type_names[e->type] : "unknown");
-        serial_print("\n");
+static void task_a_entry(void) {
+    for (int i = 0; i < 3; i++) {
+        serial_print("  [task-a] iteration ");
+        serial_print_dec(i);
+        serial_print(", yielding...\n");
+        yield();
     }
+    serial_print("  [task-a] loop done, returning\n");
+}
+
+static void task_b_entry(void) {
+    for (int i = 0; i < 3; i++) {
+        serial_print("  [task-b] iteration ");
+        serial_print_dec(i);
+        serial_print(", yielding...\n");
+        yield();
+    }
+    serial_print("  [task-b] loop done, returning\n");
 }
 
 void _start(void) {
@@ -59,7 +71,7 @@ void _start(void) {
 
     serial_init();
     serial_print("========================================\n");
-    serial_print(" milestone 3: physical memory manager\n");
+    serial_print(" milestone 5: tasks + context switch\n");
     serial_print("========================================\n");
 
     gdt_init();
@@ -67,47 +79,41 @@ void _start(void) {
     idt_init();
     pit_init(100);
     asm volatile ("sti");
-    serial_print("[ok] gdt/idt/pic/pit up, interrupts enabled\n\n");
+    serial_print("[ok] gdt/idt/pic/pit up, interrupts enabled\n");
 
-    if (memmap_request.response == NULL) {
-        serial_print("!!! limine did not answer the memmap request. halting.\n");
+    if (memmap_request.response == NULL || hhdm_request.response == NULL ||
+        kaddr_request.response == NULL) {
+        serial_print("!!! limine didn't answer a request we need. halting.\n");
         hcf();
     }
 
-    print_memmap(memmap_request.response);
-    serial_print("\n");
-
     pmm_init(memmap_request.response);
     serial_print("[ok] pmm initialized\n");
-    pmm_print_stats();
 
-    serial_print("\n--- allocation test ---\n");
+    uint64_t hhdm_offset = hhdm_request.response->offset;
+    uint64_t kernel_phys = kaddr_request.response->physical_base;
+    uint64_t kernel_virt = kaddr_request.response->virtual_base;
 
-    uint64_t pages[5];
-    for (int i = 0; i < 5; i++) {
-        pages[i] = pmm_alloc_page();
-        serial_print("alloc -> ");
-        serial_print_hex(pages[i]);
-        serial_print("\n");
+    vmm_init(hhdm_offset, kernel_phys, kernel_virt);
+    serial_print("[ok] cr3 switched, our own page tables are active\n\n");
+
+    task_init();
+    serial_print("[ok] task_init: current flow of execution is now 'main'\n");
+
+    task_create("task-a", task_a_entry);
+    task_create("task-b", task_b_entry);
+    serial_print("[ok] created task-a and task-b (not running yet)\n\n");
+
+    serial_print("--- main manually yielding, round-robin should ping-pong ---\n\n");
+
+    /* main hands off to whichever task is next in the ring each time it
+     * calls yield(). Once both tasks have run to completion (each is a
+     * short loop that yields a few times then returns), yield() becomes
+     * a no-op again because main is the only READY task left. */
+    for (int i = 0; i < 8; i++) {
+        yield();
     }
 
-    serial_print("\nfreeing page[2] (");
-    serial_print_hex(pages[2]);
-    serial_print(")...\n");
-    pmm_free_page(pages[2]);
-
-    uint64_t reused = pmm_alloc_page();
-    serial_print("alloc -> ");
-    serial_print_hex(reused);
-    if (reused == pages[2]) {
-        serial_print("  <- reused the freed page, allocator works.\n");
-    } else {
-        serial_print("  <- did NOT reuse the freed page, something's off.\n");
-    }
-
-    serial_print("\nstats after the test:\n");
-    pmm_print_stats();
-
-    serial_print("\nmilestone 3 core allocator: done.\n");
+    serial_print("\nmain: done yielding. milestone 5 step 1+2: proven.\n");
     hcf();
 }

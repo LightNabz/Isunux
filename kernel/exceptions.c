@@ -43,6 +43,14 @@ void exception_handler(interrupt_frame_t *frame) {
     serial_print_hex(frame->rflags);
     serial_print("\n");
 
+    if (frame->int_no == 14) { /* page fault -- CR2 holds the faulting address */
+        uint64_t cr2;
+        asm volatile ("mov %%cr2, %0" : "=r"(cr2));
+        serial_print("fault addr:  ");
+        serial_print_hex(cr2);
+        serial_print("  (this is the virtual address that wasn't mapped)\n");
+    }
+
     serial_print("the kernel caught this instead of triple faulting. halting now.\n");
     hcf();
 }
