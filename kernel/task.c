@@ -12,6 +12,14 @@ static int task_count = 0;
 static task_t *current_task = NULL;
 
 static void task_entry_trampoline(void) {
+    /* A task can be launched two ways: voluntarily (via yield(), called
+     * with interrupts already enabled) or preemptively (from inside the
+     * timer ISR, where hardware auto-disabled interrupts on entry).
+     * Either way, a freshly-started task should run with interrupts on
+     * -- otherwise a task that only ever gets first scheduled via
+     * preemption would silently never be preemptible itself. */
+    asm volatile ("sti");
+
     /* We land here via a `ret` inside switch_context, the very first
      * time a brand new task gets scheduled in. current_task was set to
      * us by whichever yield() call switched us in, so this is safe. */

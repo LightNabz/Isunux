@@ -83,9 +83,7 @@ Limine, ~254 MiB usable out of the 256M given to the VM, and watched the
 allocator hand back the exact freed address (0x55000) on the next
 `pmm_alloc_page()` call after freeing it.
 
-## Milestone 3 complete: physical memory manager
-
-Added since the last update:
+## Milestone 3: physical memory manager
 
 - `kernel/pmm.c` / `pmm.h` — a bitmap allocator over physical RAM. One
   bit per 4KiB page: 1 = used/unavailable, 0 = free. The bitmap is a
@@ -113,7 +111,7 @@ Limine, ~254 MiB usable out of the 256M given to the VM, and watched the
 allocator hand back the exact freed address (0x55000) on the next
 `pmm_alloc_page()` call after freeing it.
 
-## Milestone 4 complete: virtual memory / paging
+## Milestone 4: virtual memory / paging
 
 Added since the last update:
 
@@ -157,3 +155,78 @@ the switch instruction didn't immediately crash), then deliberately
 touched an unmapped address and got back exactly `vector: 14 (Page
 fault)` with `fault addr: 0xdeadbeef000` -- the CPU caught it and the
 kernel printed a readable report instead of QEMU silently resetting.
+
+## Milestone 5
+
+- `kernel/switch.asm` -- `switch_context(old_rsp_ptr, new_rsp)`. Pushes
+  the 6 callee-saved registers onto the outgoing task's stack, stashes
+  the resulting `rsp` into `*old_rsp_ptr`, loads the incoming task's
+  `rsp`, pops its 6 callee-saved registers back off, and `ret`s. That
+  `ret` is the whole trick -- it jumps to whatever address is sitting on
+  top of the *new* stack.
+- `kernel/task.c` / `task.h` -- the task manager. `task_t` is a saved
+  `rsp` + a stack + a name + a `next` pointer (tasks live in a circular
+  linked list, drawn from a fixed static pool since there's no heap
+  yet). `pmm_alloc_pages()` (new in pmm.c) grabs a contiguous run of
+  physical pages for each task's stack.
+- The hand-crafted "fake initial frame": `task_create()` doesn't run the
+  new task, it *pre-writes* its stack to look exactly like it already
+  went through one `switch_context` call -- 6 zeroed callee-saved
+  registers plus a fake return address pointing at
+  `task_entry_trampoline`, plus one padding qword so the trampoline
+  lands with ABI-correct 16-byte stack alignment. This means
+  `switch_context` never has to know or care whether it's resuming a
+  task or launching one for the first time -- the `ret` just works
+  either way.
+- `yield()` -- marks the current task `READY`, walks the ring to find
+  the next `READY` task, and calls `switch_context`. Pure round-robin,
+  no priorities, no timer involved yet -- purely voluntary.
+- `kernel.c` -- creates two test tasks that each loop 3 times printing
+  and calling `yield()`, then `main` (the original boot flow, now task 0
+  in the ring) calls `yield()` 8 times in a row.
+
+Verified for real: booted in QEMU and watched task-a and task-b cleanly
+interleave -- `task-b 0`, `task-a 0`, `task-b 1`, `task-a 1`, `task-b 2`,
+`task-a 2`, then both finish and retire through the trampoline. That's
+two independent, separately-stacked flows of execution correctly taking
+turns and resuming exactly where each left off, driven entirely by
+`switch_context`.
+
+- `kernel/irq.c` -- restructured so EOI is sent immediately per-branch,
+  *before* any possible context switch (a switch might not return to
+  that exact call site for a while, and the PIC needs the EOI promptly
+  regardless). Every `TIME_SLICE_TICKS` (5 ticks = 50ms at our 100Hz
+  PIT), the timer branch calls `yield()` directly from inside the
+  interrupt handler.
+- `kernel/task.c` -- `task_entry_trampoline` now starts every fresh task
+  with `sti`. This matters specifically for tasks that get first
+  scheduled via preemption rather than a voluntary yield: hardware
+  auto-clears the interrupt flag on ISR entry, and without this fix a
+  task launched that way would silently start with interrupts disabled
+  forever.
+- `kernel.c` -- the test changed shape entirely from milestone 5's first
+  half: three tasks (`task-x/y/z`), each an infinite loop with a
+  busy-spin between prints, **none of which ever call `yield()`**. Main
+  itself just halts in a loop (interrupts still enabled) instead of
+  explicitly cooperating either.
+
+The key realization that makes this work with almost no new code: `yield()`
+doesn't know or care whether it was called voluntarily from normal code
+or involuntarily from inside `irq_handler`. The call chain
+(`irq_common` asm -> `irq_handler` -> `yield` -> `switch_context`)
+unwinds itself naturally through ordinary `call`/`ret` semantics --
+when a preempted task is resumed, `switch_context`'s `ret` walks back up
+through `yield`'s return, then `irq_handler`'s return, and lands back in
+`irq_common`'s epilogue, which pops that task's saved general-purpose
+registers and executes the real `iretq` -- resuming the task exactly
+where the timer originally interrupted it, flags and all. No special
+"am I in an interrupt" case needed anywhere.
+
+Verified for real: booted in QEMU, watched three tasks with zero
+cooperation between them get cleanly round-robined by the timer alone --
+beat counts across all three stayed within 1 of each other over a 6
+second run (fair, no starvation), occasional out-of-order interleaving
+(`x, z, y` instead of the "expected" `z, y, x`) confirming this is
+genuine preemption timing and not a hardcoded sequence, and the
+once-a-second uptime line interleaving cleanly throughout without
+disrupting anything.

@@ -44,24 +44,42 @@ static void hcf(void) {
     }
 }
 
-static void task_a_entry(void) {
-    for (int i = 0; i < 3; i++) {
-        serial_print("  [task-a] iteration ");
-        serial_print_dec(i);
-        serial_print(", yielding...\n");
-        yield();
-    }
-    serial_print("  [task-a] loop done, returning\n");
+/* Busy-wait a bit between prints -- purely a spin count, not tied to
+ * real time. Long enough that a single call spans multiple 50ms time
+ * slices, so these tasks genuinely get interrupted mid-loop instead of
+ * conveniently finishing right before the next tick. */
+static void busy_spin(void) {
+    for (volatile uint64_t i = 0; i < 15000000; i++) { }
 }
 
-static void task_b_entry(void) {
-    for (int i = 0; i < 3; i++) {
-        serial_print("  [task-b] iteration ");
-        serial_print_dec(i);
-        serial_print(", yielding...\n");
-        yield();
+static void spinner_x(void) {
+    uint64_t beat = 0;
+    for (;;) {
+        serial_print("  [task-x] beat ");
+        serial_print_dec(beat++);
+        serial_print("\n");
+        busy_spin();
     }
-    serial_print("  [task-b] loop done, returning\n");
+}
+
+static void spinner_y(void) {
+    uint64_t beat = 0;
+    for (;;) {
+        serial_print("  [task-y] beat ");
+        serial_print_dec(beat++);
+        serial_print("\n");
+        busy_spin();
+    }
+}
+
+static void spinner_z(void) {
+    uint64_t beat = 0;
+    for (;;) {
+        serial_print("  [task-z] beat ");
+        serial_print_dec(beat++);
+        serial_print("\n");
+        busy_spin();
+    }
 }
 
 void _start(void) {
@@ -71,7 +89,7 @@ void _start(void) {
 
     serial_init();
     serial_print("========================================\n");
-    serial_print(" milestone 5: tasks + context switch\n");
+    serial_print(" milestone 5: preemptive round-robin\n");
     serial_print("========================================\n");
 
     gdt_init();
@@ -98,22 +116,17 @@ void _start(void) {
     serial_print("[ok] cr3 switched, our own page tables are active\n\n");
 
     task_init();
-    serial_print("[ok] task_init: current flow of execution is now 'main'\n");
+    task_create("task-x", spinner_x);
+    task_create("task-y", spinner_y);
+    task_create("task-z", spinner_z);
+    serial_print("[ok] 3 tasks created, none of them ever call yield()\n");
+    serial_print("[ok] time slice: 5 ticks (50ms). watch the timer preempt them.\n\n");
 
-    task_create("task-a", task_a_entry);
-    task_create("task-b", task_b_entry);
-    serial_print("[ok] created task-a and task-b (not running yet)\n\n");
-
-    serial_print("--- main manually yielding, round-robin should ping-pong ---\n\n");
-
-    /* main hands off to whichever task is next in the ring each time it
-     * calls yield(). Once both tasks have run to completion (each is a
-     * short loop that yields a few times then returns), yield() becomes
-     * a no-op again because main is the only READY task left. */
-    for (int i = 0; i < 8; i++) {
-        yield();
+    /* main never calls yield() either from here on -- it just idles.
+     * interrupts stay enabled, so the timer keeps firing, keeps calling
+     * yield() from inside irq_handler, and keeps preempting whichever
+     * task (including main itself) happens to be running. */
+    for (;;) {
+        asm volatile ("hlt");
     }
-
-    serial_print("\nmain: done yielding. milestone 5 step 1+2: proven.\n");
-    hcf();
 }
