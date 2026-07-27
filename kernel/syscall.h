@@ -3,6 +3,9 @@
 
 #define SYS_WRITE 0
 #define SYS_EXIT  1
+#define SYS_OPEN  2
+#define SYS_READ  3
+#define SYS_CLOSE 4
 
 /* Called from isr128 (isr.asm) with a pointer to the saved register
  * frame. Syscall number comes in via rax, arguments via rdi/rsi/rdx

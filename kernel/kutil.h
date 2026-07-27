@@ -17,3 +17,14 @@ static inline uint8_t inb(uint16_t port) {
     asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
     return ret;
 }
+
+static inline uint64_t k_strlen(const char *s) {
+    uint64_t n = 0;
+    while (s[n]) n++;
+    return n;
+}
+
+static inline int k_strcmp(const char *a, const char *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return (unsigned char)*a - (unsigned char)*b;
+}
