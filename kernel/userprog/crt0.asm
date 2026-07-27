@@ -1,0 +1,30 @@
+bits 64
+
+global _start
+extern main
+
+_start:
+    ; per the layout build_initial_stack() wrote:
+    ;   [rsp]    = argc
+    ;   [rsp+8]  = argv[0]  (start of the argv array)
+    mov rdi, [rsp]              ; argc
+    lea rsi, [rsp + 8]           ; argv
+
+    ; envp starts right after argv's NULL terminator: argv has (argc+1)
+    ; slots (argc pointers + one NULL), so envp = argv + (argc+1)*8
+    mov rax, rdi
+    lea rdx, [rsi + rax*8 + 8]    ; envp
+
+    call main                     ; a real `call`, so main's prologue sees
+                                   ; exactly the stack state any normal
+                                   ; function call would produce
+
+    mov edi, eax                  ; exit code = main's return value
+                                   ; (writing edi zero-extends into rdi)
+    mov rax, 1                    ; SYS_EXIT
+    int 0x80
+
+.hang:                            ; unreachable -- sys_exit never returns
+    jmp .hang
+
+section .note.GNU-stack noalloc noexec nowrite progbits

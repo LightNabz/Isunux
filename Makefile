@@ -28,13 +28,14 @@ LDFLAGS := -nostdlib \
 	-z max-page-size=0x1000 \
 	-T kernel/linker.ld
 
-C_SRCS := kernel/kernel.c kernel/serial.c kernel/gdt.c kernel/idt.c kernel/exceptions.c kernel/pic.c kernel/pit.c kernel/irq.c kernel/pmm.c kernel/vmm.c kernel/task.c kernel/tss.c kernel/syscall.c kernel/vfs.c kernel/tmpfs.c kernel/process.c kernel/elf.c
+C_SRCS := kernel/kernel.c kernel/serial.c kernel/gdt.c kernel/idt.c kernel/exceptions.c kernel/pic.c kernel/pit.c kernel/irq.c kernel/pmm.c kernel/vmm.c kernel/task.c kernel/tss.c kernel/syscall.c kernel/vfs.c kernel/tmpfs.c kernel/process.c kernel/elf.c kernel/userstack.c
 ASM_SRCS := kernel/isr.asm kernel/switch.asm kernel/usermode.asm
 OBJS := $(C_SRCS:.c=.o) $(ASM_SRCS:.asm=.o)
 
 USER_PROG_ELF := kernel/userprog/hello_elf
-USER_C_SRCS := kernel/userprog/hello.c kernel/userprog/mini_malloc.c
-USER_OBJS := $(USER_C_SRCS:.c=.o)
+USER_C_SRCS := kernel/userprog/hello.c kernel/userprog/mini_malloc.c kernel/userprog/mini_string.c kernel/userprog/mini_printf.c
+USER_ASM_SRCS := kernel/userprog/crt0.asm
+USER_OBJS := $(USER_C_SRCS:.c=.o) $(USER_ASM_SRCS:.asm=.o)
 USER_PROG_BLOB_OBJ := kernel/userprog/hello_blob.o
 OBJS += $(USER_PROG_BLOB_OBJ)
 
@@ -71,8 +72,11 @@ all: $(KERNEL)
 $(USER_PROG_ELF): $(USER_OBJS) kernel/userprog/user_link.ld
 	$(LD) $(USER_LDFLAGS) $(USER_OBJS) -o $(USER_PROG_ELF)
 
-kernel/userprog/%.o: kernel/userprog/%.c kernel/userprog/mini_libc.h kernel/userprog/mini_malloc.h
+kernel/userprog/%.o: kernel/userprog/%.c kernel/userprog/mini_libc.h kernel/userprog/mini_malloc.h kernel/userprog/mini_string.h kernel/userprog/mini_printf.h
 	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+kernel/userprog/%.o: kernel/userprog/%.asm
+	$(NASM) $(NASMFLAGS) $< -o $@
 
 $(USER_PROG_BLOB_OBJ): kernel/userprog/hello_blob.asm $(USER_PROG_ELF)
 	$(NASM) $(NASMFLAGS) $< -o $@

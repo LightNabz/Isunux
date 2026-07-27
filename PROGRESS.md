@@ -371,3 +371,93 @@ ISUNUX can now load and
 run genuine compiled programs, with real per-segment memory permissions,
 that talk to a real (if simple) filesystem through a real syscall ABI.
 That's the "userspace bridge" phase's filesystem leg closed out.
+
+## Milestone 8
+
+- `SYS_BRK` -- new syscall. `process_t` gained `heap_start`/`heap_end`
+  fields; `heap_start` is derived automatically from `elf_load()`'s new
+  `highest_vaddr_out` parameter (one page past the highest `PT_LOAD`
+  segment), not guessed or hardcoded.
+- `process_brk()` -- classic semantics: `new_brk == 0` queries the
+  current break without changing anything; otherwise it maps fresh
+  pages up to the requested break and returns the new value. No
+  shrinking support yet (a smaller request is a silent no-op) -- same
+  scope cut the PMM made with `pmm_free_page` never returning memory to
+  the OS.
+- `kernel/userprog/mini_malloc.c` -- a genuinely working first-fit
+  free-list heap allocator, backed entirely by `sys_brk()`. Each
+  allocation is a small header (`size`/`free`/`next`) plus payload;
+  `malloc()` walks existing blocks looking for a free one big enough
+  before ever asking the kernel for more memory, and `free()` just
+  flips a flag (no coalescing yet, but reuse of a same-size block works
+  correctly without it).
+- `mini_libc.h` gained `sys_brk()`.
+
+Verified for real, and it happened to catch something nice: this is the
+first userspace program with actual global mutable state (`mini_malloc`'s
+two static pointers), so for the first time the linker produced a
+**genuinely non-empty** `.data` segment alongside `.text` -- and the
+loader correctly mapped it `rw-` versus the code's `r-x`, real evidence
+the per-segment permission system built in Group B matters and works,
+not just an edge case that happened to stay empty.
+
+Full run: the VFS test from milestone 7 still passes unchanged, then
+`malloc(64)` pulled a fresh page via `brk` growing from `0x402000`
+(computed, not hardcoded), a string was written directly into that
+allocated memory and printed back correctly, and after `free()` a
+second same-size `malloc()` call returned the *exact same pointer* --
+proof the free list is really being searched and really being reused,
+not just leaking forward forever.
+
+- `kernel/userprog/mini_string.c` -- real `strlen`/`strcmp`/`memcpy`/
+  `memset`, matching the actual standard signatures exactly (so GCC's
+  builtin-declaration checking has nothing to conflict with). The old
+  makeshift `strlen_` in `mini_libc.h` is gone now that a real one exists.
+- `kernel/userprog/mini_printf.c` -- `printf` supporting `%d`/`%s`/`%x`/
+  `%c`/`%%`. Formats into a fixed 256-byte buffer, then flushes with one
+  `sys_write` -- simple, but genuinely correct for the format specifiers
+  it supports.
+- `kernel/userstack.c` / `userstack.h` -- `build_initial_stack()`, which
+  writes argc/argv/envp/auxv near the top of a fresh user stack exactly
+  how a real SysV-ABI crt0 expects to find them: argv strings first
+  (growing downward), then the pointer arrays (argc, argv[], NULL,
+  envp's NULL terminator, then a minimal auxv --  `AT_PAGESZ`/4096 and
+  the `AT_NULL` terminator pair), 16-byte-aligning the final result
+  since that's what the ABI requires at process entry. Returns the
+  resulting initial RSP -- no longer just the raw stack top constant.
+- `kernel/userprog/crt0.asm` -- the real entry point now. Reads
+  `argc`/`argv` straight off `[rsp]`/`[rsp+8]`, computes `envp` as
+  `argv + (argc+1)*8`, and makes a genuine `call main` (not a jump) so
+  `main`'s own compiler-generated prologue sees exactly the stack state
+  any normal function call would produce.
+- `kernel/userprog/hello.c` -- rewritten around a real
+  `int main(int argc, char **argv)`. No hand-wrapped `_start` in the
+  test program itself anymore; that's entirely `crt0.asm`'s job now,
+  same separation of concerns any real C program has.
+
+Verified for real: `argc = 1` / `argv[0] = hello` printed correctly --
+genuine argument parsing, not hardcoded -- and the VFS + heap tests from
+Groups A/A both still pass, now driven entirely through `printf` instead
+of raw `sys_write` calls.
+
+## Milestone 8: fully complete
+
+`brk`-backed heap allocation with real `malloc`/`free` reuse (Group A)
+plus `printf`, `string.h`, and a genuine ABI-compliant process entry
+with real `argc`/`argv` (Group B). ISUNUX user programs now look and
+behave like actual normal C programs -- dynamic memory, formatted
+output, real `main()` -- built entirely on ISUNUX's own tiny libc rather
+than a ported one.
+
+## Next: Milestone 9, shell + coreutils
+
+The last milestone on the original roadmap. Rough shape: a simple shell
+program (read a line from stdin, parse it, `fork`+`exec` or just
+directly dispatch built-in commands, repeat) and a handful of coreutils
+(`ls`, `cat`, `echo` at minimum) as separate ELF executables the shell
+can load via the ELF loader we already have. This will need real stdin
+(the keyboard IRQ exists since milestone 2 but nothing's ever piped its
+scancodes anywhere useful yet -- console reads have just returned EOF)
+and very likely `fork`/`exec` as real syscalls, which is a meaningfully
+bigger step than anything in milestone 8: `fork` means cloning an
+entire address space, not just building one from scratch.

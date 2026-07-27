@@ -46,9 +46,3 @@ static inline void sys_exit(int code) {
     syscall3(SYS_EXIT, code, 0, 0);
     for (;;) { } /* sys_exit never returns, this is just a safety net */
 }
-
-static inline unsigned long strlen_(const char *s) {
-    unsigned long n = 0;
-    while (s[n]) n++;
-    return n;
-}

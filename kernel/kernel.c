@@ -17,6 +17,7 @@
 #include "vfs.h"
 #include "process.h"
 #include "elf.h"
+#include "userstack.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -132,6 +133,17 @@ void _start(void) {
     serial_print_hex(USER_STACK_TOP);
     serial_print("\n");
 
+    /* lay out argc/argv/envp/auxv at the top of that stack per the SysV
+     * ABI, so crt0.asm can hand a real main(argc, argv) something to
+     * read instead of nothing */
+    static const char *test_argv[] = { "hello" };
+    uint64_t initial_rsp = build_initial_stack(
+        hhdm_offset, stack_phys, stack_base_vaddr,
+        USER_STACK_PAGES * PAGE_SIZE, 1, test_argv);
+    serial_print("[ok] built argc/argv/envp/auxv, initial rsp ");
+    serial_print_hex(initial_rsp);
+    serial_print("\n");
+
     /* a dedicated kernel stack for handling this process's syscalls and
      * interrupts -- TSS.rsp0 is what the CPU loads the instant this
      * process traps from ring 3 into ring 0 */
@@ -153,7 +165,7 @@ void _start(void) {
     serial_print("\nentering ring 3 now. if this works, the next line of\n");
     serial_print("output comes from a syscall made by actual usermode code:\n\n");
 
-    enter_userspace(entry_point, USER_STACK_TOP);
+    enter_userspace(entry_point, initial_rsp);
 
     /* enter_userspace never returns -- if we somehow get here, something
      * is badly wrong */
