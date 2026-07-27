@@ -28,9 +28,13 @@ LDFLAGS := -nostdlib \
 	-z max-page-size=0x1000 \
 	-T kernel/linker.ld
 
-C_SRCS := kernel/kernel.c kernel/serial.c kernel/gdt.c kernel/idt.c kernel/exceptions.c kernel/pic.c kernel/pit.c kernel/irq.c kernel/pmm.c kernel/vmm.c kernel/task.c kernel/tss.c
-ASM_SRCS := kernel/isr.asm kernel/switch.asm
+C_SRCS := kernel/kernel.c kernel/serial.c kernel/gdt.c kernel/idt.c kernel/exceptions.c kernel/pic.c kernel/pit.c kernel/irq.c kernel/pmm.c kernel/vmm.c kernel/task.c kernel/tss.c kernel/syscall.c
+ASM_SRCS := kernel/isr.asm kernel/switch.asm kernel/usermode.asm
 OBJS := $(C_SRCS:.c=.o) $(ASM_SRCS:.asm=.o)
+
+USER_PROG_BIN := kernel/userprog/hello.bin
+USER_PROG_BLOB_OBJ := kernel/userprog/hello_blob.o
+OBJS += $(USER_PROG_BLOB_OBJ)
 
 NASM := nasm
 NASMFLAGS := -f elf64
@@ -43,6 +47,12 @@ all: $(KERNEL)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 %.o: %.asm
+	$(NASM) $(NASMFLAGS) $< -o $@
+
+$(USER_PROG_BIN): kernel/userprog/hello.asm
+	$(NASM) -f bin $< -o $@
+
+$(USER_PROG_BLOB_OBJ): kernel/userprog/hello_blob.asm $(USER_PROG_BIN)
 	$(NASM) $(NASMFLAGS) $< -o $@
 
 $(KERNEL): $(OBJS) kernel/linker.ld
@@ -69,4 +79,4 @@ run: iso
 		-serial stdio -display none -no-reboot -no-shutdown
 
 clean:
-	rm -rf $(OBJS) $(KERNEL) $(ISO) iso_root
+	rm -rf $(OBJS) $(KERNEL) $(ISO) iso_root $(USER_PROG_BIN)

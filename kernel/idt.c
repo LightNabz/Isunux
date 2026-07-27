@@ -35,6 +35,9 @@ extern void isr36(void); extern void isr37(void); extern void isr38(void); exter
 extern void isr40(void); extern void isr41(void); extern void isr42(void); extern void isr43(void);
 extern void isr44(void); extern void isr45(void); extern void isr46(void); extern void isr47(void);
 
+/* the syscall gate -- triggered by `int 0x80` from ring 3 */
+extern void isr128(void);
+
 static void idt_set_gate(uint8_t vec, void (*handler)(void), uint16_t selector, uint8_t type_attr) {
     uint64_t addr = (uint64_t)handler;
     idt[vec].offset_low  = addr & 0xFFFF;
@@ -67,6 +70,13 @@ void idt_init(void) {
     for (int i = 0; i < 16; i++) {
         idt_set_gate((uint8_t)(32 + i), irq_stub_table[i], 0x08, 0x8E);
     }
+
+    /* 0xEE = present, DPL=3, 64-bit interrupt gate -- the DPL=3 is the
+     * whole point here: without it, ring 3 executing `int 0x80` gets an
+     * immediate #GP instead of ever reaching our handler. Every other
+     * gate in this table stays DPL=0 deliberately -- only the syscall
+     * entry point should be callable from userspace. */
+    idt_set_gate(0x80, isr128, 0x08, 0xEE);
 
     idt_ptr.limit = sizeof(idt) - 1;
     idt_ptr.base = (uint64_t)&idt;

@@ -159,4 +159,60 @@ IRQ_STUB 45
 IRQ_STUB 46
 IRQ_STUB 47
 
+; ---- syscall gate, vector 0x80 (128), triggered by `int 0x80` from ring 3 ----
+; Entered from ring 3, so the CPU pushes 5 values (SS/RSP/RFLAGS/CS/RIP)
+; instead of the 3 that every other stub above assumes -- but iretq
+; figures out how many to pop again by looking at the CS value it's
+; about to restore, so the exact same push-regs/call/pop-regs/iretq
+; shape works completely unmodified. Routed to a different C function
+; (syscall_handler, not exception_handler) purely to keep the two
+; concerns separate.
+
+extern syscall_handler
+
+global isr128
+isr128:
+    push 0    ; dummy error code -- int 0x80 never carries one
+    push 128  ; vector number
+    jmp syscall_common
+
+syscall_common:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+
+    mov rdi, rsp
+    call syscall_handler
+
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+
+    add rsp, 16
+    iretq
+
 section .note.GNU-stack noalloc noexec nowrite progbits
