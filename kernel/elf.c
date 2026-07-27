@@ -40,7 +40,8 @@ typedef struct __attribute__((packed)) {
 #define ELFCLASS64  2
 #define EM_X86_64   0x3e
 
-int elf_load(uint64_t pml4_phys, const uint8_t *elf_data, uint64_t elf_size, uint64_t *entry_out) {
+int elf_load(uint64_t pml4_phys, const uint8_t *elf_data, uint64_t elf_size,
+             uint64_t *entry_out, uint64_t *highest_vaddr_out) {
     if (elf_size < sizeof(elf64_ehdr_t)) {
         serial_print("[elf] file too small to even hold a header\n");
         return 0;
@@ -69,6 +70,7 @@ int elf_load(uint64_t pml4_phys, const uint8_t *elf_data, uint64_t elf_size, uin
     }
 
     uint64_t hhdm = vmm_hhdm_offset();
+    uint64_t highest_end = 0;
 
     for (uint16_t i = 0; i < eh->e_phnum; i++) {
         const elf64_phdr_t *ph =
@@ -108,6 +110,8 @@ int elf_load(uint64_t pml4_phys, const uint8_t *elf_data, uint64_t elf_size, uin
                           phys + p * PAGE_SIZE, flags);
         }
 
+        if (seg_end > highest_end) highest_end = seg_end;
+
         serial_print("[elf] segment vaddr ");
         serial_print_hex(ph->p_vaddr);
         serial_print(" memsz ");
@@ -120,5 +124,6 @@ int elf_load(uint64_t pml4_phys, const uint8_t *elf_data, uint64_t elf_size, uin
     }
 
     *entry_out = eh->e_entry;
+    *highest_vaddr_out = highest_end;
     return 1;
 }

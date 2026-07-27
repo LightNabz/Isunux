@@ -5,6 +5,7 @@
 #define SYS_OPEN  2
 #define SYS_READ  3
 #define SYS_CLOSE 4
+#define SYS_BRK   5
 
 /* Same convention as the kernel's syscall_handler expects: syscall
  * number in rax, args in rdi/rsi/rdx, triggered via `int 0x80`. */
@@ -33,6 +34,12 @@ static inline long sys_read(int fd, void *buf, unsigned long len) {
 
 static inline long sys_close(int fd) {
     return syscall3(SYS_CLOSE, fd, 0, 0);
+}
+
+/* new_brk == 0 just queries the current break without changing it --
+ * classic brk() convention. */
+static inline long sys_brk(unsigned long new_brk) {
+    return syscall3(SYS_BRK, (long)new_brk, 0, 0);
 }
 
 static inline void sys_exit(int code) {

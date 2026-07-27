@@ -33,6 +33,8 @@ ASM_SRCS := kernel/isr.asm kernel/switch.asm kernel/usermode.asm
 OBJS := $(C_SRCS:.c=.o) $(ASM_SRCS:.asm=.o)
 
 USER_PROG_ELF := kernel/userprog/hello_elf
+USER_C_SRCS := kernel/userprog/hello.c kernel/userprog/mini_malloc.c
+USER_OBJS := $(USER_C_SRCS:.c=.o)
 USER_PROG_BLOB_OBJ := kernel/userprog/hello_blob.o
 OBJS += $(USER_PROG_BLOB_OBJ)
 
@@ -66,11 +68,11 @@ all: $(KERNEL)
 %.o: %.asm
 	$(NASM) $(NASMFLAGS) $< -o $@
 
-$(USER_PROG_ELF): kernel/userprog/hello.o kernel/userprog/user_link.ld
-	$(LD) $(USER_LDFLAGS) kernel/userprog/hello.o -o $(USER_PROG_ELF)
+$(USER_PROG_ELF): $(USER_OBJS) kernel/userprog/user_link.ld
+	$(LD) $(USER_LDFLAGS) $(USER_OBJS) -o $(USER_PROG_ELF)
 
-kernel/userprog/hello.o: kernel/userprog/hello.c kernel/userprog/mini_libc.h
-	$(CC) $(USER_CFLAGS) -c kernel/userprog/hello.c -o kernel/userprog/hello.o
+kernel/userprog/%.o: kernel/userprog/%.c kernel/userprog/mini_libc.h kernel/userprog/mini_malloc.h
+	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_PROG_BLOB_OBJ): kernel/userprog/hello_blob.asm $(USER_PROG_ELF)
 	$(NASM) $(NASMFLAGS) $< -o $@
@@ -99,4 +101,4 @@ run: iso
 		-serial stdio -display none -no-reboot -no-shutdown
 
 clean:
-	rm -rf $(OBJS) $(KERNEL) $(ISO) iso_root $(USER_PROG_ELF) kernel/userprog/hello.o
+	rm -rf $(OBJS) $(KERNEL) $(ISO) iso_root $(USER_PROG_ELF) $(USER_OBJS)

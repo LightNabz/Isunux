@@ -1,4 +1,5 @@
 #include "mini_libc.h"
+#include "mini_malloc.h"
 
 /* No crt0, no libc startup -- _start IS the entry point, straight from
  * the ELF header. That's fine: we don't need argc/argv/environ or
@@ -20,5 +21,29 @@ void _start(void) {
     sys_write(1, buf, (unsigned long)n);
 
     sys_close((int)fd);
+
+    /* --- now prove the heap actually works --- */
+    const char *heap_msg = "\n--- heap test ---\n";
+    sys_write(1, heap_msg, strlen_(heap_msg));
+
+    char *a = malloc(64);
+    const char *tag = "block A, allocated fresh from brk()\n";
+    for (unsigned long i = 0; tag[i]; i++) a[i] = tag[i];
+    sys_write(1, a, strlen_(tag));
+
+    char *b = malloc(64); /* a second, distinct block -- keeps a's slot occupied for now */
+    (void)b;
+
+    free(a);
+    char *c = malloc(64); /* same size as the freed block -- should reuse it exactly */
+
+    if (c == a) {
+        const char *ok = "malloc correctly reused the freed block\n";
+        sys_write(1, ok, strlen_(ok));
+    } else {
+        const char *bad = "malloc did NOT reuse the freed block -- bug!\n";
+        sys_write(1, bad, strlen_(bad));
+    }
+
     sys_exit(0);
 }

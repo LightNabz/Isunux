@@ -1,6 +1,8 @@
 #include "process.h"
 #include "serial.h"
 #include "kutil.h"
+#include "pmm.h"
+#include "vmm.h"
 
 process_t *current_process = NULL;
 
@@ -38,15 +40,34 @@ static vnode_t console_vnode = {
     .ops = &console_ops,
 };
 
-void process_init(process_t *p, uint64_t pml4_phys) {
+void process_init(process_t *p, uint64_t pml4_phys, uint64_t heap_start) {
     k_memset(p, 0, sizeof(*p));
     p->pml4_phys = pml4_phys;
+    p->heap_start = heap_start;
+    p->heap_end = heap_start; /* empty heap until the first brk() growth */
 
     for (int fd = 0; fd < 3; fd++) {
         p->fds[fd].node = &console_vnode;
         p->fds[fd].offset = 0;
         p->fds[fd].used = 1;
     }
+}
+
+uint64_t process_brk(process_t *p, uint64_t new_brk) {
+    if (new_brk == 0) return p->heap_end; /* query mode, standard brk() behavior */
+    if (new_brk <= p->heap_end) return p->heap_end; /* no shrinking yet -- silent no-op */
+
+    uint64_t old_top = (p->heap_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    uint64_t new_top = (new_brk + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+    for (uint64_t addr = old_top; addr < new_top; addr += PAGE_SIZE) {
+        uint64_t phys = pmm_alloc_page();
+        if (phys == 0) return p->heap_end; /* out of memory -- break stays where it was */
+        vmm_map_4k_in(p->pml4_phys, addr, phys, PTE_WRITE | PTE_USER);
+    }
+
+    p->heap_end = new_brk;
+    return p->heap_end;
 }
 
 int process_open(process_t *p, const char *path) {

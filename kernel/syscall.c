@@ -44,6 +44,10 @@ void syscall_handler(interrupt_frame_t *frame) {
             frame->rax = (uint64_t)(long)process_close(current_process, fd);
             break;
         }
+        case SYS_BRK: {
+            frame->rax = process_brk(current_process, frame->rdi);
+            break;
+        }
         case SYS_EXIT: {
             sys_exit((int)frame->rdi);
             break; /* unreachable -- sys_exit halts forever */

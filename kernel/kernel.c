@@ -110,7 +110,8 @@ void _start(void) {
      * more guessing at one flag set for a whole flat binary */
     uint64_t elf_size = (uint64_t)(user_hello_elf_end - user_hello_elf_start);
     uint64_t entry_point = 0;
-    if (!elf_load(proc_as, user_hello_elf_start, elf_size, &entry_point)) {
+    uint64_t heap_start = 0;
+    if (!elf_load(proc_as, user_hello_elf_start, elf_size, &entry_point, &heap_start)) {
         serial_print("!!! elf_load failed. halting.\n");
         hcf();
     }
@@ -140,9 +141,11 @@ void _start(void) {
     serial_print("[ok] tss.rsp0 set to a dedicated kernel stack for this process\n");
 
     static process_t test_process;
-    process_init(&test_process, proc_as);
+    process_init(&test_process, proc_as, heap_start);
     current_process = &test_process;
-    serial_print("[ok] process_t set up: fd 0/1/2 = console (stdin/stdout/stderr)\n");
+    serial_print("[ok] process_t set up: fd 0/1/2 = console, heap starts at ");
+    serial_print_hex(heap_start);
+    serial_print("\n");
 
     vmm_activate(proc_as);
     serial_print("[ok] cr3 switched to the process's address space\n");
