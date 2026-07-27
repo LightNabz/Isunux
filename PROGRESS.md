@@ -276,3 +276,98 @@ half entirely zero, high half identical to the kernel's own PML4 -- and
 finally switched CR3 to that new (95% empty) address space and *back*,
 watching the kernel keep running the whole time because the shared
 higher half kept the ground under it solid.
+
+## Milestone 7
+
+- `kernel/vfs.c` / `vfs.h` -- the actual "virtual" part of the VFS: a
+  `vnode_ops_t` table (`read`/`write`/`lookup` function pointers) that
+  any filesystem implementation fills in, plus `vfs_resolve_path()`
+  which walks an absolute path one component at a time via each
+  directory's `lookup`. The syscall layer only ever talks to this
+  interface, never to tmpfs directly -- a real disk-backed filesystem
+  can be dropped in later without touching a single syscall.
+- `kernel/tmpfs.c` / `tmpfs.h` -- an in-memory filesystem tree. Nodes
+  come from a static pool (no heap yet), file content lives in a
+  PMM-allocated page accessed through HHDM, directories are a simple
+  linked list of children. `tmpfs_node_t` embeds a `vnode_t` as its
+  first member specifically so a `vnode_t*` and a `tmpfs_node_t*` are
+  pointer-compatible -- the standard C "poor man's inheritance" trick.
+- `kernel/process.c` / `process.h` -- `process_t` owns a `pml4_phys` and
+  a 16-entry fd table. fd 0/1/2 point at a **console vnode** whose
+  `write` op just calls `serial_putc` directly -- this is what lets
+  `SYS_WRITE` stop being hardcoded to serial and become genuinely
+  "write to whatever fd you were given." `process_open/read/write/close`
+  are the only things that touch the fd table; the syscall dispatcher
+  never does.
+- `kernel/syscall.c` -- `SYS_WRITE` generalized to `(fd, buf, len)`
+  routed through `process_write`, plus new `SYS_OPEN`, `SYS_READ`,
+  `SYS_CLOSE`.
+- `kernel/userprog/hello.asm` -- upgraded from milestone 6's
+  write-then-exit into a real test: opens `/hello.txt`, reads it, writes
+  what came back to stdout, closes the fd, exits. Proves the round trip
+  with real data, not just a syscall that returns successfully.
+
+Verified for real, and it caught an actual bug worth noting: the first
+attempt page-faulted (vector 14, error code `0x7` -- a *write* to a
+*present, user, read-only* page) because the flat binary's code and its
+writable scratch variables (`buf`, `fd_val`) share a single page, and
+that page was mapped without `PTE_WRITE` as a nod to milestone 6's
+"code should be read-only" idea. Without a real ELF loader there's no
+program-header information to tell code and data apart, so there's no
+honest way to map them with different permissions yet -- the fix was to
+mark the page writable and note plainly that per-segment W^X-style
+permissions are a Group B (ELF loader) deliverable, not a Group A one.
+
+Full run after the fix: the program opened `/hello.txt`, read the exact
+51 bytes `vfs_init()` had seeded into it, wrote that content back out
+through the console vnode, closed the fd, and exited -- open, read,
+write, and close all going through the same `process_t` -> `vfs` ->
+`tmpfs` chain that a real program would use.
+
+- `kernel/elf.c` / `elf.h` -- a minimal ELF64 loader. Validates the
+  magic/class/machine fields, walks the program header table, and for
+  every `PT_LOAD` segment: allocates physically contiguous pages, copies
+  `p_filesz` bytes from the file (the gap up to `p_memsz` is `.bss` --
+  zeroed for free since the pages come pre-zeroed), and maps it with
+  **real permissions taken from that segment's own `p_flags`** --
+  `PTE_WRITE` only if `PF_W` is actually set. This is the fix for the
+  exact gap Group A ran into: without ELF section info there was no
+  honest way to tell code from data, so everything had to be mapped
+  writable. Now there's real per-segment W^X-ish enforcement.
+- `kernel/userprog/mini_libc.h` -- the tiny syscall-wrapper "libc":
+  `sys_write`/`sys_open`/`sys_read`/`sys_close`/`sys_exit`, each just an
+  inline-asm `int 0x80` with the right registers set up. Enough to write
+  a real C program against our syscall ABI with zero actual libc.
+- `kernel/userprog/hello.c` -- **hello.asm is retired.** Same VFS test
+  as Group A (open `/hello.txt`, read it, write it back, close, exit),
+  but now genuine compiled C with a real `_start`, no hand-written
+  assembly anywhere in the test program itself.
+- `kernel/userprog/user_link.ld` -- a small linker script placing
+  userspace programs at `0x400000`, with `.text`/`.rodata` in one
+  `PT_LOAD` (R+X) and `.data`/`.bss` in a separate one (R+W) -- this is
+  what makes real per-segment permissions possible on the loader side.
+- `kernel.c` -- the manual "copy bytes into a page, map one page"
+  dance from Group A is gone, replaced by a single `elf_load()` call
+  that derives both the mappings *and* the entry point (`e_entry`) from
+  the ELF itself, rather than a hardcoded `0x400000` constant.
+
+Caught one real thing along the way: the linker emitted a second,
+**empty** `PT_LOAD` segment (`p_memsz == 0`) for the unused `.data`/
+`.bss` output sections, since `hello.c` has no actual global mutable
+state (its scratch buffer is a stack-local array). `elf_load()` now
+explicitly skips zero-size segments -- without that check,
+`pmm_alloc_pages(0)` returning 0 would've been misread as "out of
+memory" and failed the whole load.
+
+Verified for real: `readelf -l` on the built executable confirms real
+program headers (one `R E` segment at `0x400000`), and the boot log
+shows the loader reporting `perms r-x` for it -- genuinely read-only,
+executable code, not "writable because we had no way to know
+otherwise." The VFS round trip (open/read/write/close against
+`/hello.txt`) still works identically, now driven entirely by compiled
+C through the mini-libc.
+
+ISUNUX can now load and
+run genuine compiled programs, with real per-segment memory permissions,
+that talk to a real (if simple) filesystem through a real syscall ABI.
+That's the "userspace bridge" phase's filesystem leg closed out.

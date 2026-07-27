@@ -16,6 +16,7 @@
 #include "kutil.h"
 #include "vfs.h"
 #include "process.h"
+#include "elf.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -50,9 +51,9 @@ static void hcf(void) {
     }
 }
 
-/* the embedded flat binary from userprog/hello.asm, via userprog/hello_blob.asm */
-extern uint8_t user_hello_start[];
-extern uint8_t user_hello_end[];
+/* the embedded ELF executable from userprog/hello.c, via userprog/hello_blob.asm */
+extern uint8_t user_hello_elf_start[];
+extern uint8_t user_hello_elf_end[];
 
 void _start(void) {
     if (LIMINE_BASE_REVISION_SUPPORTED == false) {
@@ -94,7 +95,6 @@ void _start(void) {
     serial_print(" entering ring 3 to exercise real syscalls\n");
     serial_print("========================================\n");
 
-    #define USER_CODE_VADDR   0x400000ULL
     #define USER_STACK_TOP    0x600000ULL
     #define USER_STACK_PAGES  4
 
@@ -105,32 +105,18 @@ void _start(void) {
     serial_print_hex(proc_as);
     serial_print("\n");
 
-    /* copy the embedded flat binary (built from userprog/hello.asm) into
-     * freshly allocated pages, then map those pages at the exact
-     * virtual address it was assembled to run at */
-    uint64_t prog_size = (uint64_t)(user_hello_end - user_hello_start);
-    uint64_t prog_pages = (prog_size + PAGE_SIZE - 1) / PAGE_SIZE;
-    uint64_t code_phys = pmm_alloc_pages(prog_pages);
-
-    uint8_t *code_dst = (uint8_t *)(hhdm_offset + code_phys);
-    k_memset(code_dst, 0, prog_pages * PAGE_SIZE);
-    for (uint64_t i = 0; i < prog_size; i++) {
-        code_dst[i] = user_hello_start[i];
+    /* parse the embedded ELF executable (built from userprog/hello.c)
+     * and map each PT_LOAD segment with its own real permissions -- no
+     * more guessing at one flag set for a whole flat binary */
+    uint64_t elf_size = (uint64_t)(user_hello_elf_end - user_hello_elf_start);
+    uint64_t entry_point = 0;
+    if (!elf_load(proc_as, user_hello_elf_start, elf_size, &entry_point)) {
+        serial_print("!!! elf_load failed. halting.\n");
+        hcf();
     }
-
-    for (uint64_t p = 0; p < prog_pages; p++) {
-        vmm_map_4k_in(proc_as, USER_CODE_VADDR + p * PAGE_SIZE,
-                      code_phys + p * PAGE_SIZE, PTE_WRITE | PTE_USER);
-    }
-    serial_print("[ok] mapped ");
-    serial_print_dec(prog_size);
-    serial_print(" bytes of user code at ");
-    serial_print_hex(USER_CODE_VADDR);
-    serial_print(" (");
-    serial_print_dec(prog_pages);
-    serial_print(" page(s). writable for now -- this flat binary's code and\n");
-    serial_print("     data share one page with no ELF sections to tell them apart;\n");
-    serial_print("     real per-segment permissions arrive with the ELF loader.\n");
+    serial_print("[ok] elf loaded, entry point ");
+    serial_print_hex(entry_point);
+    serial_print("\n");
 
     /* user stack -- writable, grows down from USER_STACK_TOP */
     uint64_t stack_phys = pmm_alloc_pages(USER_STACK_PAGES);
@@ -164,7 +150,7 @@ void _start(void) {
     serial_print("\nentering ring 3 now. if this works, the next line of\n");
     serial_print("output comes from a syscall made by actual usermode code:\n\n");
 
-    enter_userspace(USER_CODE_VADDR, USER_STACK_TOP);
+    enter_userspace(entry_point, USER_STACK_TOP);
 
     /* enter_userspace never returns -- if we somehow get here, something
      * is badly wrong */
