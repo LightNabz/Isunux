@@ -230,3 +230,49 @@ second run (fair, no starvation), occasional out-of-order interleaving
 genuine preemption timing and not a hardcoded sequence, and the
 once-a-second uptime line interleaving cleanly throughout without
 disrupting anything.
+
+## Project renamed: ISUNUX
+
+"Isurus not Unix" -- Isurus being the mako shark genus, continuing the
+grand Unix wordplay tradition. Same project, same code, just naming it
+properly now that it's got real teeth.
+
+## Milestone 6
+
+- `kernel/tss.c` / `tss.h` -- the Task State Segment. In long mode we
+  only actually use one field, `rsp0`: the kernel stack the CPU
+  auto-loads the instant a ring-3 program traps into ring 0.
+  `iomap_base` is deliberately set to `sizeof(tss_t)` -- past the
+  segment limit -- meaning there's no I/O permission bitmap at all, so
+  every port access from ring 3 gets rejected by default.
+- `kernel/gdt.c` -- extended from 3 entries to 7: null, kernel
+  code/data (unchanged), new user code/data (DPL=3, so ring 3 is allowed
+  to load them), and a 16-byte TSS descriptor (needs two GDT slots
+  instead of one, since it carries a full 64-bit base address). `gdt.h`
+  now exposes the selector constants (`GDT_KERNEL_CODE`,
+  `GDT_USER_CODE`, etc.) for other subsystems to reference -- the user
+  ones already have RPL=3 folded into the low bits, ready to drop
+  straight into a segment register or an IRETQ frame.
+- `kernel/vmm.c` -- generalized from "always operates on the kernel's
+  one PML4" to "operates on whichever PML4 you pass it"
+  (`vmm_map_4k_in`), plus a new `PTE_USER` flag. Intermediate page table
+  entries (PML4/PDPT/PD) are now always marked user-accessible --
+  that's safe by itself since x86 paging ANDs the U/S bit down the
+  whole walk, so real protection still lives entirely in the leaf
+  entry's own flags.
+- `vmm_new_address_space()` -- allocates a fresh PML4, copies the
+  kernel's top 256 entries (indices 256-511, canonical high half --
+  where the HHDM window and kernel image live) so every address space
+  automatically shares the same kernel mappings, and leaves the bottom
+  256 entries (canonical low half) completely empty for a process to
+  map its own code/stack into later without touching anyone else's.
+- `vmm_activate()` -- just a named wrapper around loading CR3, so
+  switching address spaces reads clearly at call sites.
+
+Verified for real: booted in QEMU and confirmed every selector value,
+confirmed the TSS's `rsp0` setter actually updates the struct, then
+built a brand new address space and checked it byte-for-byte -- low
+half entirely zero, high half identical to the kernel's own PML4 -- and
+finally switched CR3 to that new (95% empty) address space and *back*,
+watching the kernel keep running the whole time because the shared
+higher half kept the ground under it solid.

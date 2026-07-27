@@ -28,7 +28,7 @@ LDFLAGS := -nostdlib \
 	-z max-page-size=0x1000 \
 	-T kernel/linker.ld
 
-C_SRCS := kernel/kernel.c kernel/serial.c kernel/gdt.c kernel/idt.c kernel/exceptions.c kernel/pic.c kernel/pit.c kernel/irq.c kernel/pmm.c kernel/vmm.c kernel/task.c
+C_SRCS := kernel/kernel.c kernel/serial.c kernel/gdt.c kernel/idt.c kernel/exceptions.c kernel/pic.c kernel/pit.c kernel/irq.c kernel/pmm.c kernel/vmm.c kernel/task.c kernel/tss.c
 ASM_SRCS := kernel/isr.asm kernel/switch.asm
 OBJS := $(C_SRCS:.c=.o) $(ASM_SRCS:.asm=.o)
 
