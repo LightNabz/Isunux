@@ -27,13 +27,16 @@ installed already in this environment).
 make          # just compile kernel.elf
 make iso      # build myos.iso (bootable, BIOS + UEFI)
 make run      # build + boot in QEMU headless, serial piped to your terminal
+make gui      # build + boot in QEMU with a visible window, serial still piped to your terminal
 make clean    # nuke build artifacts
 ```
 
 `make run` boots QEMU with `-display none -serial stdio`, so you'll see the
 kernel's serial output directly in your terminal, no VNC/graphical window
-needed. Ctrl+C to kill QEMU (the kernel halts forever in an `hlt` loop, so
-it won't exit on its own).
+needed.
+
+`make gui` boots QEMU with `-display sdl -serial stdio`, so you get a visible
+QEMU window plus serial I/O connected to the terminal.
 
 ## Where this goes next (the actual roadmap)
 

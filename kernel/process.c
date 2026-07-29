@@ -43,12 +43,17 @@ static vnode_t console_vnode = {
 };
 
 process_t *process_alloc(int parent_pid) {
-    if (process_count >= MAX_PROCESSES) return NULL;
-    process_t *p = &process_pool[process_count++];
-    k_memset(p, 0, sizeof(*p));
-    p->pid = next_pid++;
-    p->parent_pid = parent_pid;
-    return p;
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (process_pool[i].pid == 0) {
+            process_t *p = &process_pool[i];
+            k_memset(p, 0, sizeof(*p));
+            p->pid = next_pid++;
+            p->parent_pid = parent_pid;
+            process_count++;
+            return p;
+        }
+    }
+    return NULL;
 }
 
 void process_init(process_t *p, uint64_t pml4_phys, uint64_t heap_start) {
@@ -89,17 +94,20 @@ int64_t process_waitpid(process_t *self, int target_pid, int *status_out) {
     for (;;) {
         int found_any_child = 0;
 
-        for (int i = 0; i < process_count; i++) {
-            process_t *p = &process_pool[i];
-            if (p->parent_pid != self->pid) continue;
-            if (target_pid != -1 && p->pid != target_pid) continue;
+for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t *p = &process_pool[i];
+        if (p->pid == 0) continue;
+        if (p->parent_pid != self->pid) continue;
+        if (target_pid != -1 && p->pid != target_pid) continue;
 
-            found_any_child = 1;
+        found_any_child = 1;
 
-            if (p->is_zombie) {
-                if (status_out) *status_out = p->exit_code;
-                p->is_zombie = 0; /* reaped -- resources still not freed, see process.h note */
-                return p->pid;
+        if (p->is_zombie) {
+            int reaped_pid = p->pid;
+            if (status_out) *status_out = p->exit_code;
+            k_memset(p, 0, sizeof(*p));
+            process_count--;
+            return reaped_pid;
             }
         }
 

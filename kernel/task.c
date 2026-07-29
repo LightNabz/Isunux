@@ -16,6 +16,28 @@ static task_t *current_task = NULL;
 
 extern void switch_context(uint64_t *old_rsp_ptr, uint64_t new_rsp);
 
+static void unlink_task_from_ring(task_t *t) {
+    if (t == current_task) return;
+
+    task_t *iter = current_task;
+    while (iter->next != t && iter->next != current_task) {
+        iter = iter->next;
+    }
+
+    if (iter->next == t) {
+        iter->next = t->next;
+    }
+}
+
+static task_t *find_terminated_task(void) {
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (&tasks[i] != current_task && tasks[i].state == TASK_TERMINATED) {
+            return &tasks[i];
+        }
+    }
+    return NULL;
+}
+
 static void task_entry_trampoline(void) {
     /* A task can be launched two ways: voluntarily (via yield(), called
      * with interrupts already enabled) or preemptively (from inside the
@@ -61,12 +83,22 @@ void task_init(void) {
 }
 
 task_t *task_alloc_raw(const char *name) {
-    if (task_count >= MAX_TASKS) {
+    task_t *t = NULL;
+
+    if (task_count < MAX_TASKS) {
+        t = &tasks[task_count++];
+    } else {
+        t = find_terminated_task();
+        if (t) {
+            unlink_task_from_ring(t);
+        }
+    }
+
+    if (!t) {
         serial_print("[task] out of task slots!\n");
         return NULL;
     }
 
-    task_t *t = &tasks[task_count++];
     t->name = name;
     t->entry = NULL;
     t->user_entry_rip = 0;

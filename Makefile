@@ -130,5 +130,9 @@ run: iso
 	qemu-system-x86_64 -M q35 -m 256M -cdrom $(ISO) -boot d \
 		-serial stdio -display none -no-reboot -no-shutdown
 
+gui: iso
+	qemu-system-x86_64 -M q35 -m 256M -cdrom $(ISO) -boot d \
+		-serial stdio -display sdl -no-reboot -no-shutdown
+
 clean:
 	rm -rf $(OBJS) $(KERNEL) $(ISO) iso_root $(USER_PROG_OBJS) $(USER_ELFS) $(USER_BLOB_ASMS) $(USER_BLOB_OBJS) $(USER_RUNTIME_OBJS) $(USER_CRT0_OBJ)
