@@ -7,6 +7,12 @@
 #define SYS_READ  3
 #define SYS_CLOSE 4
 #define SYS_BRK   5
+#define SYS_FORK  6
+#define SYS_EXECVE  7
+#define SYS_WAITPID 8
+#define SYS_READDIR 9
+#define SYS_CHDIR   10
+#define SYS_GETCWD  11
 
 /* Called from isr128 (isr.asm) with a pointer to the saved register
  * frame. Syscall number comes in via rax, arguments via rdi/rsi/rdx

@@ -1,0 +1,6 @@
+*.o
+*.iso
+*.elf
+*_elf
+iso_root
+iso_root/*

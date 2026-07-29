@@ -1,0 +1,136 @@
+#include "keyboard.h"
+#include "serial.h"
+#include "task.h"
+
+/* Set 1 scancodes, US QWERTY. Unmapped entries (0) are keys we don't
+ * translate at all -- Ctrl, Alt, F-keys, arrows, etc. Indexed with
+ * designated initializers so the table reads as "scancode -> char"
+ * directly, matching the well-known Set 1 layout without needing a
+ * giant positional list. */
+static const char lower_table[128] = {
+    [0x01] = 27, /* ESC */
+    [0x02] = '1', [0x03] = '2', [0x04] = '3', [0x05] = '4', [0x06] = '5',
+    [0x07] = '6', [0x08] = '7', [0x09] = '8', [0x0A] = '9', [0x0B] = '0',
+    [0x0C] = '-', [0x0D] = '=', [0x0E] = '\b',
+    [0x0F] = '\t',
+    [0x10] = 'q', [0x11] = 'w', [0x12] = 'e', [0x13] = 'r', [0x14] = 't',
+    [0x15] = 'y', [0x16] = 'u', [0x17] = 'i', [0x18] = 'o', [0x19] = 'p',
+    [0x1A] = '[', [0x1B] = ']',
+    [0x1C] = '\n',
+    [0x1E] = 'a', [0x1F] = 's', [0x20] = 'd', [0x21] = 'f', [0x22] = 'g',
+    [0x23] = 'h', [0x24] = 'j', [0x25] = 'k', [0x26] = 'l',
+    [0x27] = ';', [0x28] = '\'', [0x29] = '`',
+    [0x2B] = '\\', [0x2C] = 'z', [0x2D] = 'x', [0x2E] = 'c', [0x2F] = 'v',
+    [0x30] = 'b', [0x31] = 'n', [0x32] = 'm',
+    [0x33] = ',', [0x34] = '.', [0x35] = '/',
+    [0x39] = ' ',
+};
+
+static const char upper_table[128] = {
+    [0x02] = '!', [0x03] = '@', [0x04] = '#', [0x05] = '$', [0x06] = '%',
+    [0x07] = '^', [0x08] = '&', [0x09] = '*', [0x0A] = '(', [0x0B] = ')',
+    [0x0C] = '_', [0x0D] = '+', [0x0E] = '\b',
+    [0x0F] = '\t',
+    [0x10] = 'Q', [0x11] = 'W', [0x12] = 'E', [0x13] = 'R', [0x14] = 'T',
+    [0x15] = 'Y', [0x16] = 'U', [0x17] = 'I', [0x18] = 'O', [0x19] = 'P',
+    [0x1A] = '{', [0x1B] = '}',
+    [0x1C] = '\n',
+    [0x1E] = 'A', [0x1F] = 'S', [0x20] = 'D', [0x21] = 'F', [0x22] = 'G',
+    [0x23] = 'H', [0x24] = 'J', [0x25] = 'K', [0x26] = 'L',
+    [0x27] = ':', [0x28] = '"', [0x29] = '~',
+    [0x2B] = '|', [0x2C] = 'Z', [0x2D] = 'X', [0x2E] = 'C', [0x2F] = 'V',
+    [0x30] = 'B', [0x31] = 'N', [0x32] = 'M',
+    [0x33] = '<', [0x34] = '>', [0x35] = '?',
+    [0x39] = ' ',
+};
+
+#define SC_LSHIFT 0x2A
+#define SC_RSHIFT 0x36
+static int shift_held = 0;
+
+/* the line currently being typed -- edited locally (backspace works
+ * here) before ever becoming visible to a reader */
+#define EDIT_LINE_MAX 256
+static char edit_line[EDIT_LINE_MAX];
+static uint32_t edit_len = 0;
+
+/* completed lines only get pushed here, and only as a whole line at a
+ * time (on Enter) -- this is what keyboard_read() actually drains */
+#define KBD_QUEUE_SIZE 1024
+static char kbd_queue[KBD_QUEUE_SIZE];
+static volatile uint32_t kbd_head = 0;
+static volatile uint32_t kbd_tail = 0;
+
+static void kbd_queue_push(char c) {
+    uint32_t next = (kbd_head + 1) % KBD_QUEUE_SIZE;
+    if (next == kbd_tail) return; /* queue full -- drop it rather than corrupt anything */
+    kbd_queue[kbd_head] = c;
+    kbd_head = next;
+}
+
+static int kbd_queue_pop(char *out) {
+    if (kbd_tail == kbd_head) return 0; /* empty */
+    *out = kbd_queue[kbd_tail];
+    kbd_tail = (kbd_tail + 1) % KBD_QUEUE_SIZE;
+    return 1;
+}
+
+static void commit_char(char c) {
+    if (c == '\b') {
+        if (edit_len > 0) {
+            edit_len--;
+            serial_print("\b \b"); /* move back, blank the character, move back again */
+        }
+        return;
+    }
+
+    if (c == '\n') {
+        serial_putc('\n'); /* echo the newline itself */
+        for (uint32_t i = 0; i < edit_len; i++) kbd_queue_push(edit_line[i]);
+        kbd_queue_push('\n');
+        edit_len = 0;
+        return;
+    }
+
+    if (edit_len < EDIT_LINE_MAX - 1) {
+        edit_line[edit_len++] = c;
+        serial_putc(c); /* echo what was typed -- "cooked mode" */
+    }
+}
+
+void keyboard_handle_scancode(uint8_t sc) {
+    int released = sc & 0x80;
+    uint8_t code = sc & 0x7F;
+
+    if (code == SC_LSHIFT || code == SC_RSHIFT) {
+        shift_held = !released;
+        return;
+    }
+
+    if (released) return; /* only make codes matter for everything else */
+
+    char c = shift_held ? upper_table[code] : lower_table[code];
+    if (c == 0) return; /* unmapped key (ctrl, alt, F-keys, arrows, ...) */
+
+    commit_char(c);
+}
+
+long keyboard_read(void *buf, uint64_t count) {
+    uint8_t *dst = (uint8_t *)buf;
+    uint64_t n = 0;
+
+    char c;
+    while (!kbd_queue_pop(&c)) {
+        yield(); /* block cooperatively until something's actually typed */
+    }
+    dst[n++] = (uint8_t)c;
+
+    /* whole lines are pushed atomically on Enter, so once we've gotten
+     * one byte it's safe to keep draining without blocking again until
+     * we hit the newline or run out of requested space */
+    while (n < count && c != '\n' && kbd_queue_pop(&c)) {
+        dst[n++] = (uint8_t)c;
+    }
+
+    return (long)n;
+}

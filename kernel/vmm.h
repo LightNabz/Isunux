@@ -38,6 +38,15 @@ void vmm_map_4k(uint64_t vaddr, uint64_t paddr, uint64_t flags);
  * kernel) can see down there. */
 uint64_t vmm_new_address_space(void);
 
+/* Clones every present mapping in the LOW half (PML4 indices 0-255 --
+ * canonical-low, userspace territory) of src_pml4 into dest_pml4:
+ * allocates a fresh physical page per mapping, copies its contents, and
+ * maps it with the exact same permission bits the original had. Full
+ * physical copy, no copy-on-write yet -- same "correct-shaped but
+ * simple" scope cut as everywhere else in ISUNUX. This is fork()'s
+ * entire address-space story. */
+void vmm_clone_lower_half(uint64_t dest_pml4_phys, uint64_t src_pml4_phys);
+
 /* Switch CR3 to a given address space (the kernel's own, or one from
  * vmm_new_address_space()). */
 void vmm_activate(uint64_t pml4_phys);

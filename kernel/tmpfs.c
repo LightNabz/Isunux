@@ -4,7 +4,8 @@
 #include "kutil.h"
 
 #define TMPFS_MAX_NODES 32
-#define TMPFS_FILE_CAPACITY PAGE_SIZE /* one page per file for now -- no growth beyond that yet */
+#define TMPFS_FILE_CAPACITY_PAGES 8 /* 32 KiB per file -- enough to hold a real compiled ELF for exec() */
+#define TMPFS_FILE_CAPACITY (TMPFS_FILE_CAPACITY_PAGES * PAGE_SIZE)
 
 static tmpfs_node_t node_pool[TMPFS_MAX_NODES];
 static int node_count = 0;
@@ -58,16 +59,31 @@ static vnode_t *tmpfs_dir_lookup(vnode_t *dir_vnode, const char *name) {
     return NULL;
 }
 
+static int tmpfs_dir_readdir(vnode_t *dir_vnode, int index, char *name_out, uint64_t name_out_size) {
+    tmpfs_node_t *dir = (tmpfs_node_t *)dir_vnode;
+    int i = 0;
+    for (tmpfs_node_t *child = dir->first_child; child; child = child->next_sibling, i++) {
+        if (i != index) continue;
+        uint64_t j = 0;
+        for (; child->vnode.name[j] && j < name_out_size - 1; j++) name_out[j] = child->vnode.name[j];
+        name_out[j] = '\0';
+        return 1;
+    }
+    return 0; /* index is past the last child */
+}
+
 static vnode_ops_t tmpfs_file_ops = {
     .read = tmpfs_file_read,
     .write = tmpfs_file_write,
     .lookup = NULL,
+    .readdir = NULL,
 };
 
 static vnode_ops_t tmpfs_dir_ops = {
     .read = NULL,
     .write = NULL,
     .lookup = tmpfs_dir_lookup,
+    .readdir = tmpfs_dir_readdir,
 };
 
 void tmpfs_init(void) {
@@ -89,7 +105,7 @@ tmpfs_node_t *tmpfs_create_file(tmpfs_node_t *dir, const char *name) {
     f->vnode.ops = &tmpfs_file_ops;
     set_name(&f->vnode, name);
 
-    uint64_t phys = pmm_alloc_page();
+    uint64_t phys = pmm_alloc_pages(TMPFS_FILE_CAPACITY_PAGES);
     f->data = (uint8_t *)(vmm_hhdm_offset() + phys);
     f->capacity = TMPFS_FILE_CAPACITY;
     f->size = 0;

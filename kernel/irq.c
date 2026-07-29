@@ -3,6 +3,7 @@
 #include "pic.h"
 #include "kutil.h"
 #include "task.h"
+#include "keyboard.h"
 
 static volatile uint64_t timer_ticks = 0;
 
@@ -25,14 +26,6 @@ void irq_handler(interrupt_frame_t *frame) {
              * PIC needs to know this IRQ was handled well before that. */
             pic_send_eoi(0);
 
-            if (timer_ticks % 100 == 0) { /* once a second */
-                serial_print("[timer] ");
-                serial_print_dec(timer_ticks / 100);
-                serial_print("s uptime, ");
-                serial_print_dec(timer_ticks);
-                serial_print(" ticks\n");
-            }
-
             if (timer_ticks % TIME_SLICE_TICKS == 0) {
                 /* this is the entire preemption mechanism: yield() does
                  * not know or care that it's being called from inside
@@ -46,13 +39,7 @@ void irq_handler(interrupt_frame_t *frame) {
         }
         case 1: { /* keyboard */
             uint8_t scancode = inb(KEYBOARD_DATA_PORT);
-            serial_print("[kbd] scancode ");
-            serial_print_hex(scancode);
-            if (scancode & 0x80) {
-                serial_print("  (key released)\n");
-            } else {
-                serial_print("  (key pressed)\n");
-            }
+            keyboard_handle_scancode(scancode);
             pic_send_eoi(1);
             return;
         }

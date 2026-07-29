@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #define VFS_MAX_NAME 64
+#define VFS_MAX_PATH 128
 
 typedef enum {
     VNODE_FILE,
@@ -19,6 +20,11 @@ typedef struct vnode_ops {
     long (*read)(struct vnode *node, void *buf, uint64_t count, uint64_t offset);
     long (*write)(struct vnode *node, const void *buf, uint64_t count, uint64_t offset);
     struct vnode *(*lookup)(struct vnode *dir, const char *name);
+    /* returns 1 and writes the index'th child's name into name_out on
+     * success, 0 once index runs past the last child (end of
+     * directory), -1 on error (e.g. called on something that isn't a
+     * directory at all). */
+    int (*readdir)(struct vnode *dir, int index, char *name_out, uint64_t name_out_size);
 } vnode_ops_t;
 
 typedef struct vnode {
@@ -30,7 +36,23 @@ typedef struct vnode {
 void vfs_init(void);
 vnode_t *vfs_root(void);
 
-/* Absolute paths only for now ("/foo/bar"), walked one component at a
- * time via each directory's ops->lookup. Returns NULL if any component
- * along the way doesn't exist. */
+/* Absolute paths only ("/foo/bar"), walked one component at a time via
+ * each directory's ops->lookup. Returns NULL if any component along
+ * the way doesn't exist. */
 vnode_t *vfs_resolve_path(const char *path);
+
+/* Combines a cwd and a path into an absolute path string in out (just
+ * string concatenation with a '/' inserted -- no "." or ".."
+ * component handling yet, a documented scope cut). If path is already
+ * absolute, cwd is ignored and path is copied through unchanged. */
+void vfs_combine_path(const char *cwd, const char *path, char *out, uint64_t out_size);
+
+/* Resolves path relative to cwd (or absolutely, if path starts with
+ * '/') -- what every cwd-aware syscall (open, chdir, exec) should call
+ * instead of vfs_resolve_path directly. */
+vnode_t *vfs_resolve_path_cwd(const char *cwd, const char *path);
+
+/* Directory listing by path + index, since we don't have real
+ * directory file descriptors yet -- simplest thing that actually
+ * works, matches the rest of this project's scope philosophy. */
+int vfs_readdir_path(const char *cwd, const char *path, int index, char *name_out, uint64_t name_out_size);

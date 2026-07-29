@@ -4,6 +4,29 @@
 
 static vnode_t *root_vnode;
 
+/* every embedded ELF, one pair of symbols per program name, generated
+ * by the Makefile's %_blob.asm rule (kernel/userprog/NAME_blob.asm) */
+extern uint8_t user_hello_elf_start[], user_hello_elf_end[];
+extern uint8_t user_sh_elf_start[], user_sh_elf_end[];
+extern uint8_t user_echo_elf_start[], user_echo_elf_end[];
+extern uint8_t user_cat_elf_start[], user_cat_elf_end[];
+extern uint8_t user_ls_elf_start[], user_ls_elf_end[];
+
+typedef struct {
+    const char *name;
+    uint8_t *start;
+    uint8_t *end;
+} embedded_binary_t;
+
+static embedded_binary_t embedded_binaries[] = {
+    { "sh",    user_sh_elf_start,    user_sh_elf_end },
+    { "hello", user_hello_elf_start, user_hello_elf_end },
+    { "echo",  user_echo_elf_start,  user_echo_elf_end },
+    { "cat",   user_cat_elf_start,   user_cat_elf_end },
+    { "ls",    user_ls_elf_start,    user_ls_elf_end },
+};
+#define EMBEDDED_BINARY_COUNT (sizeof(embedded_binaries) / sizeof(embedded_binaries[0]))
+
 void vfs_init(void) {
     tmpfs_init();
     root_vnode = tmpfs_get_root();
@@ -14,6 +37,17 @@ void vfs_init(void) {
     tmpfs_node_t *hello = tmpfs_create_file((tmpfs_node_t *)root_vnode, "hello.txt");
     const char *content = "this file lives in tmpfs, mapped through the vfs.\n";
     hello->vnode.ops->write(&hello->vnode, content, k_strlen(content), 0);
+
+    /* seed every real executable ISUNUX ships, exactly the way any of
+     * them would be loaded by exec() -- same embedded bytes the kernel
+     * shipped with, just reachable as real paths via genuine tmpfs
+     * read/write, no special-casing any one of them. */
+    tmpfs_node_t *bin_dir = tmpfs_create_dir((tmpfs_node_t *)root_vnode, "bin");
+    for (unsigned i = 0; i < EMBEDDED_BINARY_COUNT; i++) {
+        tmpfs_node_t *f = tmpfs_create_file(bin_dir, embedded_binaries[i].name);
+        uint64_t size = (uint64_t)(embedded_binaries[i].end - embedded_binaries[i].start);
+        f->vnode.ops->write(&f->vnode, embedded_binaries[i].start, size, 0);
+    }
 }
 
 vnode_t *vfs_root(void) {
@@ -43,4 +77,34 @@ vnode_t *vfs_resolve_path(const char *path) {
     }
 
     return current;
+}
+
+void vfs_combine_path(const char *cwd, const char *path, char *out, uint64_t out_size) {
+    if (path[0] == '/' || out_size == 0) {
+        /* already absolute -- just copy it through */
+        uint64_t i = 0;
+        for (; path[i] && i < out_size - 1; i++) out[i] = path[i];
+        out[i] = '\0';
+        return;
+    }
+
+    uint64_t i = 0;
+    for (; cwd[i] && i < out_size - 2; i++) out[i] = cwd[i];
+    if (i == 0 || out[i - 1] != '/') out[i++] = '/';
+
+    uint64_t j = 0;
+    while (path[j] && i < out_size - 1) out[i++] = path[j++];
+    out[i] = '\0';
+}
+
+vnode_t *vfs_resolve_path_cwd(const char *cwd, const char *path) {
+    char combined[VFS_MAX_PATH];
+    vfs_combine_path(cwd, path, combined, sizeof(combined));
+    return vfs_resolve_path(combined);
+}
+
+int vfs_readdir_path(const char *cwd, const char *path, int index, char *name_out, uint64_t name_out_size) {
+    vnode_t *node = vfs_resolve_path_cwd(cwd, path);
+    if (!node || node->type != VNODE_DIR || !node->ops || !node->ops->readdir) return -1;
+    return node->ops->readdir(node, index, name_out, name_out_size);
 }

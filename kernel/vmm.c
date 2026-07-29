@@ -131,3 +131,37 @@ uint64_t vmm_new_address_space(void) {
 void vmm_activate(uint64_t pml4_phys) {
     asm volatile ("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
 }
+
+void vmm_clone_lower_half(uint64_t dest_pml4_phys, uint64_t src_pml4_phys) {
+    uint64_t *src_pml4 = phys_to_virt(src_pml4_phys);
+
+    for (int i = 0; i < 256; i++) {
+        if (!(src_pml4[i] & PTE_PRESENT)) continue;
+        uint64_t *src_pdpt = phys_to_virt(src_pml4[i] & ~0xFFFULL);
+
+        for (int j = 0; j < 512; j++) {
+            if (!(src_pdpt[j] & PTE_PRESENT)) continue;
+            uint64_t *src_pd = phys_to_virt(src_pdpt[j] & ~0xFFFULL);
+
+            for (int k = 0; k < 512; k++) {
+                if (!(src_pd[k] & PTE_PRESENT)) continue;
+                if (src_pd[k] & PTE_HUGE) continue; /* never used in userspace; skip defensively */
+                uint64_t *src_pt = phys_to_virt(src_pd[k] & ~0xFFFULL);
+
+                for (int l = 0; l < 512; l++) {
+                    if (!(src_pt[l] & PTE_PRESENT)) continue;
+
+                    uint64_t src_phys = src_pt[l] & ~0xFFFULL;
+                    uint64_t flags = src_pt[l] & 0xFFFULL; /* preserve exact permission bits, e.g. read-only code stays read-only */
+
+                    uint64_t new_phys = pmm_alloc_page();
+                    k_memcpy((uint8_t *)phys_to_virt(new_phys), (uint8_t *)phys_to_virt(src_phys), PAGE_SIZE);
+
+                    uint64_t vaddr = ((uint64_t)i << 39) | ((uint64_t)j << 30) |
+                                     ((uint64_t)k << 21) | ((uint64_t)l << 12);
+                    vmm_map_4k_in(dest_pml4_phys, vaddr, new_phys, flags);
+                }
+            }
+        }
+    }
+}

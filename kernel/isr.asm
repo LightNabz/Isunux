@@ -196,6 +196,15 @@ syscall_common:
     mov rdi, rsp
     call syscall_handler
 
+; Exported so a forked child's hand-built kernel stack (see fork.c) can
+; skip straight to this exact point via switch_context's `ret` -- as far
+; as this epilogue is concerned, it's popping a completely normal saved
+; register frame either way, it has no idea (and doesn't need to know)
+; whether syscall_handler actually just returned here for real, or
+; whether a task is resuming for the very first time with a
+; hand-crafted copy of its parent's frame sitting where a real one would be.
+global syscall_return_point
+syscall_return_point:
     pop r15
     pop r14
     pop r13
