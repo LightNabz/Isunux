@@ -72,11 +72,67 @@ static int tmpfs_dir_readdir(vnode_t *dir_vnode, int index, char *name_out, uint
     return 0; /* index is past the last child */
 }
 
+static int tmpfs_dir_create(vnode_t *dir_vnode, const char *name) {
+    tmpfs_node_t *dir = (tmpfs_node_t *)dir_vnode;
+    if (tmpfs_dir_lookup(dir_vnode, name)) return -1; /* already exists */
+    return tmpfs_create_file(dir, name) ? 0 : -1;
+}
+
+static int tmpfs_dir_mkdir(vnode_t *dir_vnode, const char *name) {
+    tmpfs_node_t *dir = (tmpfs_node_t *)dir_vnode;
+    if (tmpfs_dir_lookup(dir_vnode, name)) return -1; /* already exists */
+    return tmpfs_create_dir(dir, name) ? 0 : -1;
+}
+
+static int tmpfs_dir_unlink(vnode_t *dir_vnode, const char *name) {
+    tmpfs_node_t *dir = (tmpfs_node_t *)dir_vnode;
+
+    tmpfs_node_t *prev = NULL;
+    tmpfs_node_t *child = dir->first_child;
+    while (child && k_strcmp(child->vnode.name, name) != 0) {
+        prev = child;
+        child = child->next_sibling;
+    }
+    if (!child) return -1; /* no such entry */
+
+    if (child->vnode.type == VNODE_DIR && child->first_child != NULL) {
+        return -1; /* directory not empty -- same restriction real rmdir() has */
+    }
+
+    /* unlink from the sibling chain */
+    if (prev) prev->next_sibling = child->next_sibling;
+    else dir->first_child = child->next_sibling;
+
+    /* reclaim the file's backing pages -- the tmpfs_node_t struct
+     * itself is NOT returned to the pool (tmpfs has no free-list for
+     * node slots, just a bump allocator); a documented scope cut for
+     * how small and short-lived this filesystem needs to be for now. */
+    if (child->vnode.type == VNODE_FILE && child->data != NULL) {
+        uint64_t hhdm = vmm_hhdm_offset();
+        uint64_t phys_base = (uint64_t)child->data - hhdm;
+        for (uint64_t off = 0; off < child->capacity; off += PAGE_SIZE) {
+            pmm_free_page(phys_base + off);
+        }
+    }
+
+    return 0;
+}
+
+static int tmpfs_file_stat(vnode_t *node, uint64_t *size_out) {
+    tmpfs_node_t *f = (tmpfs_node_t *)node;
+    *size_out = f->size;
+    return 0;
+}
+
 static vnode_ops_t tmpfs_file_ops = {
     .read = tmpfs_file_read,
     .write = tmpfs_file_write,
     .lookup = NULL,
     .readdir = NULL,
+    .mkdir = NULL,
+    .create = NULL,
+    .unlink = NULL,
+    .stat = tmpfs_file_stat,
 };
 
 static vnode_ops_t tmpfs_dir_ops = {
@@ -84,6 +140,10 @@ static vnode_ops_t tmpfs_dir_ops = {
     .write = NULL,
     .lookup = tmpfs_dir_lookup,
     .readdir = tmpfs_dir_readdir,
+    .mkdir = tmpfs_dir_mkdir,
+    .create = tmpfs_dir_create,
+    .unlink = tmpfs_dir_unlink,
+    .stat = NULL, /* directories report size 0 via the generic fallback, same as devfs */
 };
 
 void tmpfs_init(void) {

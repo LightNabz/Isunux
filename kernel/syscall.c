@@ -101,6 +101,27 @@ void syscall_handler(interrupt_frame_t *frame) {
             frame->rax = i;
             break;
         }
+        case SYS_MKDIR: {
+            const char *path = (const char *)frame->rdi;
+            frame->rax = (uint64_t)(int64_t)process_mkdir(proc, path);
+            break;
+        }
+        case SYS_CREATE: {
+            const char *path = (const char *)frame->rdi;
+            frame->rax = (uint64_t)(int64_t)process_create(proc, path);
+            break;
+        }
+        case SYS_UNLINK: {
+            const char *path = (const char *)frame->rdi;
+            frame->rax = (uint64_t)(int64_t)process_unlink(proc, path);
+            break;
+        }
+        case SYS_STAT: {
+            const char *path = (const char *)frame->rdi;
+            vfs_stat_t *out = (vfs_stat_t *)frame->rsi;
+            frame->rax = (uint64_t)(int64_t)process_stat(proc, path, out);
+            break;
+        }
         case SYS_EXIT: {
             sys_exit((int)frame->rdi);
             break; /* unreachable -- sys_exit never returns */

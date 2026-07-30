@@ -51,6 +51,11 @@ long process_read(process_t *p, int fd, void *buf, uint64_t count);
 long process_write(process_t *p, int fd, const void *buf, uint64_t count);
 int process_close(process_t *p, int fd);
 
+int process_mkdir(process_t *p, const char *path);
+int process_create(process_t *p, const char *path);
+int process_unlink(process_t *p, const char *path);
+int process_stat(process_t *p, const char *path, vfs_stat_t *out);
+
 /* Resolves path relative to p's cwd, confirms it's a directory, and
  * updates p->cwd on success. No "." or ".." component support yet --
  * same scope cut vfs_combine_path documents. Returns 0 on success, -1

@@ -157,3 +157,55 @@ int process_close(process_t *p, int fd) {
     p->fds[fd].offset = 0;
     return 0;
 }
+
+/* mkdir/create/unlink all need the same shape of work: resolve cwd +
+ * path down to the PARENT directory, then hand the bare basename to
+ * that directory's own vnode_ops -- vnode_ops has no "create myself",
+ * only "create a child of this directory". vfs_split_path() is what
+ * separates "/a/b/c" into parent "/a/b" and basename "c". */
+static vnode_t *resolve_parent_dir(process_t *p, const char *path, char *base_out, uint64_t base_out_size) {
+    char combined[VFS_MAX_PATH];
+    vfs_combine_path(p->cwd, path, combined, sizeof(combined));
+
+    char dir_path[VFS_MAX_PATH];
+    vfs_split_path(combined, dir_path, sizeof(dir_path), base_out, base_out_size);
+
+    if (base_out[0] == '\0') return NULL; /* e.g. path was just "/" */
+
+    vnode_t *dir = vfs_resolve_path(dir_path);
+    if (!dir || dir->type != VNODE_DIR) return NULL;
+    return dir;
+}
+
+int process_mkdir(process_t *p, const char *path) {
+    char name[VFS_MAX_NAME];
+    vnode_t *dir = resolve_parent_dir(p, path, name, sizeof(name));
+    if (!dir || !dir->ops || !dir->ops->mkdir) return -1;
+    return dir->ops->mkdir(dir, name);
+}
+
+int process_create(process_t *p, const char *path) {
+    char name[VFS_MAX_NAME];
+    vnode_t *dir = resolve_parent_dir(p, path, name, sizeof(name));
+    if (!dir || !dir->ops || !dir->ops->create) return -1;
+    return dir->ops->create(dir, name);
+}
+
+int process_unlink(process_t *p, const char *path) {
+    char name[VFS_MAX_NAME];
+    vnode_t *dir = resolve_parent_dir(p, path, name, sizeof(name));
+    if (!dir || !dir->ops || !dir->ops->unlink) return -1;
+    return dir->ops->unlink(dir, name);
+}
+
+int process_stat(process_t *p, const char *path, vfs_stat_t *out) {
+    vnode_t *node = vfs_resolve_path_cwd(p->cwd, path);
+    if (!node) return -1;
+
+    out->type = (uint64_t)node->type;
+    out->size = 0;
+    if (node->ops && node->ops->stat) {
+        node->ops->stat(node, &out->size);
+    }
+    return 0;
+}

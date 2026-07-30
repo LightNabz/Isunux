@@ -12,6 +12,20 @@
 #define SYS_READDIR 9
 #define SYS_CHDIR   10
 #define SYS_GETCWD  11
+#define SYS_MKDIR   12
+#define SYS_CREATE  13
+#define SYS_UNLINK  14
+#define SYS_STAT    15
+
+/* Mirrors vfs_stat_t in kernel/vfs.h exactly -- this is the
+ * kernel/userland ABI, kept in sync by hand like the SYS_* numbers
+ * above. type is VNODE_FILE(0) or VNODE_DIR(1). */
+typedef struct {
+    unsigned long type;
+    unsigned long size;
+} stat_t;
+#define VNODE_FILE_T 0
+#define VNODE_DIR_T  1
 
 /* Same convention as the kernel's syscall_handler expects: syscall
  * number in rax, args in rdi/rsi/rdx, triggered via `int 0x80`. */
@@ -99,4 +113,20 @@ static inline long sys_chdir(const char *path) {
 
 static inline long sys_getcwd(char *buf, unsigned long size) {
     return syscall3(SYS_GETCWD, (long)buf, (long)size, 0);
+}
+
+static inline long sys_mkdir(const char *path) {
+    return syscall3(SYS_MKDIR, (long)path, 0, 0);
+}
+
+static inline long sys_create(const char *path) {
+    return syscall3(SYS_CREATE, (long)path, 0, 0);
+}
+
+static inline long sys_unlink(const char *path) {
+    return syscall3(SYS_UNLINK, (long)path, 0, 0);
+}
+
+static inline long sys_stat(const char *path, stat_t *out) {
+    return syscall3(SYS_STAT, (long)path, (long)out, 0);
 }

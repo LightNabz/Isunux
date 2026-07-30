@@ -12,6 +12,10 @@ extern uint8_t user_sh_elf_start[], user_sh_elf_end[];
 extern uint8_t user_echo_elf_start[], user_echo_elf_end[];
 extern uint8_t user_cat_elf_start[], user_cat_elf_end[];
 extern uint8_t user_ls_elf_start[], user_ls_elf_end[];
+extern uint8_t user_mkdir_elf_start[], user_mkdir_elf_end[];
+extern uint8_t user_touch_elf_start[], user_touch_elf_end[];
+extern uint8_t user_rm_elf_start[], user_rm_elf_end[];
+extern uint8_t user_pwd_elf_start[], user_pwd_elf_end[];
 
 typedef struct {
     const char *name;
@@ -25,6 +29,10 @@ static embedded_binary_t embedded_binaries[] = {
     { "echo",  user_echo_elf_start,  user_echo_elf_end },
     { "cat",   user_cat_elf_start,   user_cat_elf_end },
     { "ls",    user_ls_elf_start,    user_ls_elf_end },
+    { "mkdir", user_mkdir_elf_start, user_mkdir_elf_end },
+    { "touch", user_touch_elf_start, user_touch_elf_end },
+    { "rm",    user_rm_elf_start,    user_rm_elf_end },
+    { "pwd",   user_pwd_elf_start,   user_pwd_elf_end },
 };
 #define EMBEDDED_BINARY_COUNT (sizeof(embedded_binaries) / sizeof(embedded_binaries[0]))
 
@@ -53,9 +61,8 @@ void vfs_init(void) {
     /* minimal standard layout -- just the directories that are
      * actually useful yet. Nothing here is mounted or special (it's
      * all still one tmpfs); this is purely "create these dirs at
-     * boot" the same way /bin is. More (/var, /lib, /proc, a real
-     * /dev backed by a devfs, ...) can show up later as something
-     * actually needs them. */
+     * boot" the same way /bin is. More (/var, /lib, /proc, ...) can
+     * show up later as something actually needs them. */
     tmpfs_create_dir((tmpfs_node_t *)root_vnode, "tmp");
     tmpfs_create_dir((tmpfs_node_t *)root_vnode, "etc");
     tmpfs_create_dir((tmpfs_node_t *)root_vnode, "home");
@@ -68,6 +75,41 @@ void vfs_init(void) {
      * tmpfs-backed files. */
     tmpfs_node_t *dev_dir = tmpfs_create_dir((tmpfs_node_t *)root_vnode, "dev");
     devfs_install(&dev_dir->vnode);
+}
+
+void vfs_split_path(const char *path, char *dir_out, uint64_t dir_out_size,
+                     char *base_out, uint64_t base_out_size) {
+    /* find the last '/' -- everything before it is the parent dir,
+     * everything after is the bare name being created/removed */
+    int64_t last_slash = -1;
+    for (int64_t i = 0; path[i] != '\0'; i++) {
+        if (path[i] == '/') last_slash = i;
+    }
+
+    if (last_slash < 0) {
+        /* no slash at all -- shouldn't happen for our always-absolute
+         * paths, but handle it as "current dir" defensively */
+        if (dir_out_size > 0) { dir_out[0] = '.'; dir_out[1] = '\0'; }
+        uint64_t j = 0;
+        for (; path[j] && j + 1 < base_out_size; j++) base_out[j] = path[j];
+        base_out[j] = '\0';
+        return;
+    }
+
+    if (last_slash == 0) {
+        /* "/name" -- parent is just root */
+        if (dir_out_size > 0) { dir_out[0] = '/'; dir_out[1] = '\0'; }
+    } else {
+        uint64_t n = (uint64_t)last_slash;
+        if (n >= dir_out_size) n = dir_out_size - 1;
+        for (uint64_t i = 0; i < n; i++) dir_out[i] = path[i];
+        dir_out[n] = '\0';
+    }
+
+    const char *base = path + last_slash + 1;
+    uint64_t j = 0;
+    for (; base[j] && j + 1 < base_out_size; j++) base_out[j] = base[j];
+    base_out[j] = '\0';
 }
 
 vnode_t *vfs_root(void) {

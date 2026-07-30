@@ -25,6 +25,24 @@ typedef struct vnode_ops {
      * directory), -1 on error (e.g. called on something that isn't a
      * directory at all). */
     int (*readdir)(struct vnode *dir, int index, char *name_out, uint64_t name_out_size);
+    /* Directory-mutation ops -- all optional (NULL is a legal value,
+     * meaning "this filesystem doesn't support that", e.g. devfs's
+     * fixed device table can't have new devices mkdir'd into it).
+     * Return 0 on success, -1 on any failure (already exists, name too
+     * long, out of nodes, not a directory, op unsupported, ...). */
+    int (*mkdir)(struct vnode *dir, const char *name);
+    int (*create)(struct vnode *dir, const char *name);
+    /* Removes a child by name. Works on both files and EMPTY
+     * directories -- real POSIX splits this into unlink() (files
+     * only) and rmdir() (empty dirs only); one combined op is a
+     * documented scope cut for this minimal filesystem. */
+    int (*unlink)(struct vnode *dir, const char *name);
+    /* Fills out->size (out->type is always set by the generic caller
+     * from node->type, no filesystem needs to repeat that). NULL is
+     * legal -- means "no notion of size" (e.g. devfs's tty/null/zero
+     * are streams, not byte-addressed files), and callers should just
+     * treat that as size 0. */
+    int (*stat)(struct vnode *node, uint64_t *size_out);
 } vnode_ops_t;
 
 typedef struct vnode {
@@ -74,3 +92,22 @@ int vfs_readdir_path(const char *cwd, const char *path, int index, char *name_ou
  * string-concatenating "cd" arguments (see vfs_combine_path) would
  * grow forever, e.g. "/../home/../etc", instead of just "/etc". */
 void vfs_canonical_path(vnode_t *node, char *out, uint64_t out_size);
+
+/* Splits "/some/dir/name" into dir_out="/some/dir" and base_out="name"
+ * (or dir_out="/" and base_out="name" for a bare "/name"). Used by
+ * mkdir/create/unlink, which all need "resolve the PARENT directory,
+ * then operate on it by the child's bare name" -- vnode_ops has no
+ * notion of "create myself", only "create a child of this directory". */
+void vfs_split_path(const char *path, char *dir_out, uint64_t dir_out_size,
+                     char *base_out, uint64_t base_out_size);
+
+/* Minimal stat info. Kept intentionally tiny (no permissions, no
+ * timestamps, no inode number -- none of that exists yet). type is a
+ * vnode_type_t value (VNODE_FILE=0, VNODE_DIR=1). This layout is part
+ * of the kernel/userland ABI: mini_libc.h's stat_t must stay in sync
+ * with this by hand, same convention already used for the SYS_* syscall
+ * numbers duplicated between syscall.h and mini_libc.h. */
+typedef struct {
+    uint64_t type;
+    uint64_t size;
+} vfs_stat_t;

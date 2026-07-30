@@ -13,6 +13,10 @@
 #define SYS_READDIR 9
 #define SYS_CHDIR   10
 #define SYS_GETCWD  11
+#define SYS_MKDIR   12
+#define SYS_CREATE  13
+#define SYS_UNLINK  14
+#define SYS_STAT    15
 
 /* Called from isr128 (isr.asm) with a pointer to the saved register
  * frame. Syscall number comes in via rax, arguments via rdi/rsi/rdx

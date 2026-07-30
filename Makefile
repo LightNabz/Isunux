@@ -70,7 +70,7 @@ NASMFLAGS := -f elf64
 # The shared runtime (malloc/string/printf + crt0) is compiled once and
 # reused by every program, same as any real libc would be.
 
-USER_PROGRAMS := hello sh echo cat ls
+USER_PROGRAMS := hello sh echo cat ls mkdir touch rm pwd
 
 USER_RUNTIME_SRCS := kernel/userprog/mini_malloc.c kernel/userprog/mini_string.c kernel/userprog/mini_printf.c
 USER_RUNTIME_OBJS := $(USER_RUNTIME_SRCS:.c=.o)
