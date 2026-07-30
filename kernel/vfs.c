@@ -48,6 +48,16 @@ void vfs_init(void) {
         uint64_t size = (uint64_t)(embedded_binaries[i].end - embedded_binaries[i].start);
         f->vnode.ops->write(&f->vnode, embedded_binaries[i].start, size, 0);
     }
+
+    /* minimal standard layout -- just the directories that are
+     * actually useful yet. Nothing here is mounted or special (it's
+     * all still one tmpfs); this is purely "create these dirs at
+     * boot" the same way /bin is. More (/var, /lib, /proc, a real
+     * /dev backed by a devfs, ...) can show up later as something
+     * actually needs them. */
+    tmpfs_create_dir((tmpfs_node_t *)root_vnode, "tmp");
+    tmpfs_create_dir((tmpfs_node_t *)root_vnode, "etc");
+    tmpfs_create_dir((tmpfs_node_t *)root_vnode, "home");
 }
 
 vnode_t *vfs_root(void) {
@@ -70,6 +80,17 @@ vnode_t *vfs_resolve_path(const char *path) {
         }
         component[i] = '\0';
         if (*p == '/') p++;
+
+        if (component[0] == '\0') {
+            continue; /* empty component, e.g. from "//" or a trailing "/" -- just skip it */
+        }
+        if (k_strcmp(component, ".") == 0) {
+            continue; /* stay at current */
+        }
+        if (k_strcmp(component, "..") == 0) {
+            current = current->parent; /* root's parent is itself, so this never goes NULL */
+            continue;
+        }
 
         if (!current->ops || !current->ops->lookup) return NULL;
         current = current->ops->lookup(current, component);

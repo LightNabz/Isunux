@@ -3,8 +3,8 @@
 #include "vmm.h"
 #include "kutil.h"
 
-#define TMPFS_MAX_NODES 32
-#define TMPFS_FILE_CAPACITY_PAGES 8 /* 32 KiB per file -- enough to hold a real compiled ELF for exec() */
+#define TMPFS_MAX_NODES 128
+#define TMPFS_FILE_CAPACITY_PAGES 16 /* 64 KiB per file -- room for real compiled ELFs plus growth */
 #define TMPFS_FILE_CAPACITY (TMPFS_FILE_CAPACITY_PAGES * PAGE_SIZE)
 
 static tmpfs_node_t node_pool[TMPFS_MAX_NODES];
@@ -91,6 +91,7 @@ void tmpfs_init(void) {
     root->vnode.type = VNODE_DIR;
     root->vnode.ops = &tmpfs_dir_ops;
     set_name(&root->vnode, "/");
+    root->vnode.parent = &root->vnode; /* .. from / stays at / */
 }
 
 vnode_t *tmpfs_get_root(void) {
@@ -104,6 +105,7 @@ tmpfs_node_t *tmpfs_create_file(tmpfs_node_t *dir, const char *name) {
     f->vnode.type = VNODE_FILE;
     f->vnode.ops = &tmpfs_file_ops;
     set_name(&f->vnode, name);
+    f->vnode.parent = &dir->vnode;
 
     uint64_t phys = pmm_alloc_pages(TMPFS_FILE_CAPACITY_PAGES);
     f->data = (uint8_t *)(vmm_hhdm_offset() + phys);
@@ -122,6 +124,7 @@ tmpfs_node_t *tmpfs_create_dir(tmpfs_node_t *dir, const char *name) {
     d->vnode.type = VNODE_DIR;
     d->vnode.ops = &tmpfs_dir_ops;
     set_name(&d->vnode, name);
+    d->vnode.parent = &dir->vnode;
 
     d->next_sibling = dir->first_child;
     dir->first_child = d;

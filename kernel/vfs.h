@@ -31,20 +31,28 @@ typedef struct vnode {
     vnode_type_t type;
     char name[VFS_MAX_NAME];
     vnode_ops_t *ops;
+    struct vnode *parent; /* the containing directory's vnode. The root
+                            * is its own parent (same as real Unix: cd'ing
+                            * ".." from "/" just stays at "/"). Filled in
+                            * by whichever filesystem creates the node --
+                            * lets vfs_resolve_path() handle ".." generically,
+                            * without asking any specific filesystem for it. */
 } vnode_t;
 
 void vfs_init(void);
 vnode_t *vfs_root(void);
 
 /* Absolute paths only ("/foo/bar"), walked one component at a time via
- * each directory's ops->lookup. Returns NULL if any component along
- * the way doesn't exist. */
+ * each directory's ops->lookup, with "." and ".." handled generically
+ * (via vnode->parent) before ever calling lookup. Returns NULL if any
+ * component along the way doesn't exist. */
 vnode_t *vfs_resolve_path(const char *path);
 
 /* Combines a cwd and a path into an absolute path string in out (just
- * string concatenation with a '/' inserted -- no "." or ".."
- * component handling yet, a documented scope cut). If path is already
- * absolute, cwd is ignored and path is copied through unchanged. */
+ * string concatenation with a '/' inserted -- "." and ".." components
+ * are left in the string as-is and resolved later, by vfs_resolve_path).
+ * If path is already absolute, cwd is ignored and path is copied through
+ * unchanged. */
 void vfs_combine_path(const char *cwd, const char *path, char *out, uint64_t out_size);
 
 /* Resolves path relative to cwd (or absolutely, if path starts with
