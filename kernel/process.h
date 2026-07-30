@@ -50,16 +50,19 @@ int process_open(process_t *p, const char *path);
 long process_read(process_t *p, int fd, void *buf, uint64_t count);
 long process_write(process_t *p, int fd, const void *buf, uint64_t count);
 int process_close(process_t *p, int fd);
+int process_dup2(process_t *p, int oldfd, int newfd);
+int process_pipe(process_t *p, int fds_out[2]);
 
 int process_mkdir(process_t *p, const char *path);
 int process_create(process_t *p, const char *path);
 int process_unlink(process_t *p, const char *path);
 int process_stat(process_t *p, const char *path, vfs_stat_t *out);
 
-/* Resolves path relative to p's cwd, confirms it's a directory, and
- * updates p->cwd on success. No "." or ".." component support yet --
- * same scope cut vfs_combine_path documents. Returns 0 on success, -1
- * if the path doesn't resolve or isn't a directory. */
+/* Resolves path relative to p's cwd (with full "." / ".." support --
+ * see vfs_resolve_path), confirms it's a directory, and updates p->cwd
+ * to the CANONICAL form of that resolved path (see vfs_canonical_path)
+ * -- never the raw string the caller passed in. Returns 0 on success,
+ * -1 if the path doesn't resolve or isn't a directory. */
 int process_chdir(process_t *p, const char *path);
 
 uint64_t process_brk(process_t *p, uint64_t new_brk);

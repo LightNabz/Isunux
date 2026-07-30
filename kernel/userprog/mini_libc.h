@@ -16,6 +16,8 @@
 #define SYS_CREATE  13
 #define SYS_UNLINK  14
 #define SYS_STAT    15
+#define SYS_DUP2    16
+#define SYS_PIPE    17
 
 /* Mirrors vfs_stat_t in kernel/vfs.h exactly -- this is the
  * kernel/userland ABI, kept in sync by hand like the SYS_* numbers
@@ -129,4 +131,13 @@ static inline long sys_unlink(const char *path) {
 
 static inline long sys_stat(const char *path, stat_t *out) {
     return syscall3(SYS_STAT, (long)path, (long)out, 0);
+}
+
+static inline long sys_dup2(int oldfd, int newfd) {
+    return syscall3(SYS_DUP2, oldfd, newfd, 0);
+}
+
+/* fds_out[0] = read end, fds_out[1] = write end, matching real pipe(2) */
+static inline long sys_pipe(int fds_out[2]) {
+    return syscall3(SYS_PIPE, (long)fds_out, 0, 0);
 }

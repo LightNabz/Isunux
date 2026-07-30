@@ -4,6 +4,7 @@
 #include "vmm.h"
 #include "task.h"
 #include "devfs.h"
+#include "pipe.h"
 
 static process_t process_pool[MAX_PROCESSES];
 static int process_count = 0;
@@ -44,6 +45,9 @@ void process_clone_into(process_t *dst, process_t *src, uint64_t new_pml4_phys) 
     for (int i = 0; i < VFS_MAX_PATH; i++) dst->cwd[i] = src->cwd[i];
     for (int fd = 0; fd < MAX_FDS; fd++) {
         dst->fds[fd] = src->fds[fd]; /* struct copy -- by value, see process.h note */
+        if (dst->fds[fd].used && dst->fds[fd].node->ops && dst->fds[fd].node->ops->dup) {
+            dst->fds[fd].node->ops->dup(dst->fds[fd].node);
+        }
     }
 }
 
@@ -152,9 +156,79 @@ long process_write(process_t *p, int fd, const void *buf, uint64_t count) {
 
 int process_close(process_t *p, int fd) {
     if (fd < 0 || fd >= MAX_FDS || !p->fds[fd].used) return -1;
+    if (p->fds[fd].node->ops && p->fds[fd].node->ops->close) {
+        p->fds[fd].node->ops->close(p->fds[fd].node);
+    }
     p->fds[fd].used = 0;
     p->fds[fd].node = NULL;
     p->fds[fd].offset = 0;
+    return 0;
+}
+
+/* Makes newfd become another reference to whatever oldfd currently
+ * points at -- closing (with the same close-hook semantics as
+ * process_close) whatever newfd used to be first, exactly like real
+ * dup2(). This is the one primitive that makes both I/O redirection
+ * and pipes possible: neither a redirected file nor a pipe end can be
+ * reopened by path onto fd 0/1/2 (redirected files could in principle,
+ * but a pipe end has no path at all -- it's anonymous), so the shell
+ * always opens/creates it at some other fd, dup2()s it onto 0/1, then
+ * closes the original. */
+int process_dup2(process_t *p, int oldfd, int newfd) {
+    if (oldfd < 0 || oldfd >= MAX_FDS || !p->fds[oldfd].used) return -1;
+    if (newfd < 0 || newfd >= MAX_FDS) return -1;
+    if (oldfd == newfd) return newfd;
+
+    if (p->fds[newfd].used) {
+        process_close(p, newfd);
+    }
+
+    p->fds[newfd].node = p->fds[oldfd].node;
+    p->fds[newfd].offset = 0; /* independent offset, same documented scope cut as fork */
+    p->fds[newfd].used = 1;
+
+    if (p->fds[newfd].node->ops && p->fds[newfd].node->ops->dup) {
+        p->fds[newfd].node->ops->dup(p->fds[newfd].node);
+    }
+    return newfd;
+}
+
+/* Creates a pipe and installs its two ends into p's fd table.
+ * fds_out[0] = read end, fds_out[1] = write end -- same convention as
+ * real pipe(2). Returns 0 on success, -1 if out of pipe slots or out
+ * of fd slots (in which case any fd it did manage to allocate is
+ * closed again, so a failed pipe() never leaks one end). */
+int process_pipe(process_t *p, int fds_out[2]) {
+    vnode_t *read_end, *write_end;
+    if (pipe_create(&read_end, &write_end) != 0) return -1;
+
+    int read_fd = -1, write_fd = -1;
+    for (int fd = 3; fd < MAX_FDS; fd++) {
+        if (!p->fds[fd].used) { read_fd = fd; break; }
+    }
+    if (read_fd >= 0) {
+        for (int fd = read_fd + 1; fd < MAX_FDS; fd++) {
+            if (!p->fds[fd].used) { write_fd = fd; break; }
+        }
+    }
+    if (read_fd < 0 || write_fd < 0) {
+        /* out of fd slots -- release the one reference pipe_create()
+         * handed us for each end so the pipe doesn't leak */
+        if (read_end->ops->close) read_end->ops->close(read_end);
+        if (write_end->ops->close) write_end->ops->close(write_end);
+        return -1;
+    }
+
+    p->fds[read_fd].node = read_end;
+    p->fds[read_fd].offset = 0;
+    p->fds[read_fd].used = 1;
+
+    p->fds[write_fd].node = write_end;
+    p->fds[write_fd].offset = 0;
+    p->fds[write_fd].used = 1;
+
+    fds_out[0] = read_fd;
+    fds_out[1] = write_fd;
     return 0;
 }
 

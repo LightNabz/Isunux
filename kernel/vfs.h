@@ -43,6 +43,19 @@ typedef struct vnode_ops {
      * are streams, not byte-addressed files), and callers should just
      * treat that as size 0. */
     int (*stat)(struct vnode *node, uint64_t *size_out);
+    /* Both optional (NULL is the common case -- tmpfs/devfs nodes have
+     * no per-reference lifecycle at all). Only something like a pipe,
+     * where two ends share a single buffer and need to know exactly
+     * how many open file descriptors reference each end, needs these:
+     *   dup()   -- called once for every NEW fd that ends up pointing
+     *              at this node (process_clone_into on fork, and
+     *              process_dup2), i.e. "another reference exists now".
+     *   close() -- called once for every fd referencing this node that
+     *              gets closed (process_close, process_dup2 overwriting
+     *              an fd, and sys_exit closing everything on the way
+     *              out), i.e. "one fewer reference exists now". */
+    void (*dup)(struct vnode *node);
+    void (*close)(struct vnode *node);
 } vnode_ops_t;
 
 typedef struct vnode {
@@ -55,6 +68,13 @@ typedef struct vnode {
                             * by whichever filesystem creates the node --
                             * lets vfs_resolve_path() handle ".." generically,
                             * without asking any specific filesystem for it. */
+    void *priv; /* owner-defined context. tmpfs/devfs don't need this --
+                  * they embed vnode_t as the first member of a bigger
+                  * struct and cast back (e.g. tmpfs_node_t). That trick
+                  * doesn't work when TWO distinct vnodes need to reach
+                  * the SAME shared object (a pipe's read end and write
+                  * end both need to find the same pipe_t), which is
+                  * what this field is for instead. */
 } vnode_t;
 
 void vfs_init(void);

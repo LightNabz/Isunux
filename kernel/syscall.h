@@ -17,6 +17,8 @@
 #define SYS_CREATE  13
 #define SYS_UNLINK  14
 #define SYS_STAT    15
+#define SYS_DUP2    16
+#define SYS_PIPE    17
 
 /* Called from isr128 (isr.asm) with a pointer to the saved register
  * frame. Syscall number comes in via rax, arguments via rdi/rsi/rdx

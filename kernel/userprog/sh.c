@@ -3,43 +3,404 @@
 #include "mini_printf.h"
 #include <stdint.h>
 
-#define MAX_LINE 256
-#define MAX_ARGS 16
-#define MAX_PATH 128
+#define MAX_LINE   256
+#define MAX_ARGS   16
+#define MAX_STAGES 8
+#define MAX_PATH   128
+#define MAX_TOKENS (MAX_ARGS * MAX_STAGES)
+#define TOKEN_ARENA_SIZE 512
 
-static int split_line(char *line, char **argv_out) {
-    int argc = 0;
-    char *p = line;
-
-    while (*p && argc < MAX_ARGS - 1) {
-        while (*p == ' ' || *p == '\t') p++;
-        if (!*p) break;
-
-        argv_out[argc++] = p;
-        while (*p && *p != ' ' && *p != '\t' && *p != '\n') p++;
-        if (*p) {
-            *p = '\0';
-            p++;
-        }
-    }
-    argv_out[argc] = 0;
-    return argc;
+static void copy_bounded(char *dst, uint64_t dst_size, const char *src) {
+    uint64_t i = 0;
+    for (; src[i] && i + 1 < dst_size; i++) dst[i] = src[i];
+    dst[i] = '\0';
 }
 
-static void build_bin_path(char *out, uint64_t out_size, const char *cmd) {
-    const char *prefix = "/bin/";
+static int is_var_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+static int str_to_int(const char *s) {
+    int neg = 0;
+    if (*s == '-') { neg = 1; s++; }
+    int v = 0;
+    while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); s++; }
+    return neg ? -v : v;
+}
+
+/* ==================== shell-local environment ====================
+ * Real POSIX environment variables live in envp[], passed alongside
+ * argv[] into every exec()'d process, and a child reads them itself
+ * via getenv(). This kernel's execve() has no envp parameter at all
+ * (a documented scope cut -- extending the ABI to pass one is real,
+ * separate kernel work). So this is SHELL-LOCAL only: $VAR expansion
+ * and the PATH search below both consult this table, but a child
+ * program can't see or read it -- there's no getenv() for it to call.
+ * "export" is accepted for familiarity but behaves exactly like a
+ * plain assignment here, since there's no envp mechanism for it to
+ * actually change. */
+#define MAX_ENV 32
+typedef struct {
+    char name[32];
+    char value[128];
+    int used;
+} env_var_t;
+
+static env_var_t env_vars[MAX_ENV];
+
+static const char *env_get(const char *name) {
+    for (int i = 0; i < MAX_ENV; i++) {
+        if (env_vars[i].used && strcmp(env_vars[i].name, name) == 0) return env_vars[i].value;
+    }
+    return NULL;
+}
+
+static void env_set(const char *name, const char *value) {
+    for (int i = 0; i < MAX_ENV; i++) {
+        if (env_vars[i].used && strcmp(env_vars[i].name, name) == 0) {
+            copy_bounded(env_vars[i].value, sizeof(env_vars[i].value), value);
+            return;
+        }
+    }
+    for (int i = 0; i < MAX_ENV; i++) {
+        if (!env_vars[i].used) {
+            copy_bounded(env_vars[i].name, sizeof(env_vars[i].name), name);
+            copy_bounded(env_vars[i].value, sizeof(env_vars[i].value), value);
+            env_vars[i].used = 1;
+            return;
+        }
+    }
+    /* table full -- silently dropped, same spirit as every other
+     * fixed-pool limit in this kernel */
+}
+
+static int is_assignment(const char *word) {
+    if (!((word[0] >= 'a' && word[0] <= 'z') || (word[0] >= 'A' && word[0] <= 'Z') || word[0] == '_')) return 0;
+    uint64_t i = 1;
+    while (word[i] && is_var_char(word[i])) i++;
+    return word[i] == '=';
+}
+
+static void do_assignment(const char *word) {
+    char name[32];
     uint64_t i = 0;
-    for (; prefix[i] && i < out_size - 1; i++) out[i] = prefix[i];
-    uint64_t j = 0;
-    while (cmd[j] && i < out_size - 1) out[i++] = cmd[j++];
-    out[i] = '\0';
+    while (word[i] && word[i] != '=' && i < sizeof(name) - 1) { name[i] = word[i]; i++; }
+    name[i] = '\0';
+    env_set(name, word[i] == '=' ? &word[i + 1] : "");
+}
+
+/* ==================== tokenizer ====================
+ * Handles single/double quotes (spaces inside them don't split a
+ * token; single quotes suppress $VAR expansion, double quotes still
+ * allow it, same as real shells) and $VAR expansion. Operators (|, >,
+ * <) split a token even with no surrounding whitespace ("ls|cat"
+ * works, not just "ls | cat") as long as they're unquoted.
+ * All word text is copied into a single static arena so tokens can
+ * safely outlive the original input line (expansion can make a word
+ * longer than what was originally typed, so tokens can't just be
+ * pointers back into `line` the way a plain whitespace-split could). */
+typedef enum { TOK_WORD, TOK_PIPE, TOK_REDIR_OUT, TOK_REDIR_IN } tok_type_t;
+typedef struct { tok_type_t type; char *text; } token_t;
+
+static char arena[TOKEN_ARENA_SIZE];
+static uint64_t arena_pos;
+
+static int tokenize(const char *line, token_t *toks, int max_toks) {
+    arena_pos = 0;
+    int n = 0;
+    const char *p = line;
+
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        if (n >= max_toks) break;
+
+        if (*p == '|' || *p == '>' || *p == '<') {
+            toks[n].type = (*p == '|') ? TOK_PIPE : (*p == '>') ? TOK_REDIR_OUT : TOK_REDIR_IN;
+            toks[n].text = NULL;
+            p++;
+            n++;
+            continue;
+        }
+
+        uint64_t start_pos = arena_pos;
+        int in_single = 0, in_double = 0;
+
+        while (*p) {
+            if (!in_single && !in_double && (*p == ' ' || *p == '\t' || *p == '|' || *p == '>' || *p == '<')) break;
+
+            if (!in_double && *p == '\'') { in_single = !in_single; p++; continue; }
+            if (!in_single && *p == '"') { in_double = !in_double; p++; continue; }
+
+            if (!in_single && *p == '$') {
+                p++;
+                char varname[32];
+                uint64_t vi = 0;
+                while (*p && is_var_char(*p) && vi < sizeof(varname) - 1) { varname[vi++] = *p; p++; }
+                varname[vi] = '\0';
+                const char *val = env_get(varname);
+                if (val) {
+                    for (uint64_t k = 0; val[k] && arena_pos < TOKEN_ARENA_SIZE - 1; k++) arena[arena_pos++] = val[k];
+                }
+                continue; /* $NAME already fully consumed above */
+            }
+
+            if (arena_pos < TOKEN_ARENA_SIZE - 1) arena[arena_pos++] = *p;
+            p++;
+        }
+
+        if (arena_pos < TOKEN_ARENA_SIZE) arena[arena_pos++] = '\0';
+        toks[n].type = TOK_WORD;
+        toks[n].text = &arena[start_pos];
+        n++;
+    }
+
+    return n;
+}
+
+/* ==================== pipeline parsing ==================== */
+typedef struct {
+    char *argv[MAX_ARGS];
+    int argc;
+    char *redirect_in;
+    char *redirect_out;
+} stage_t;
+
+static int parse_pipeline(token_t *toks, int ntoks, stage_t *stages, int max_stages) {
+    int nstages = 0;
+    int i = 0;
+
+    while (i < ntoks) {
+        if (nstages >= max_stages) {
+            printf("sh: too many pipeline stages\n");
+            return -1;
+        }
+        stage_t *s = &stages[nstages];
+        s->argc = 0;
+        s->redirect_in = NULL;
+        s->redirect_out = NULL;
+
+        while (i < ntoks && toks[i].type != TOK_PIPE) {
+            if (toks[i].type == TOK_REDIR_OUT || toks[i].type == TOK_REDIR_IN) {
+                tok_type_t op = toks[i].type;
+                i++;
+                if (i >= ntoks || toks[i].type != TOK_WORD) {
+                    printf("sh: syntax error near '%s'\n", op == TOK_REDIR_OUT ? ">" : "<");
+                    return -1;
+                }
+                if (op == TOK_REDIR_OUT) s->redirect_out = toks[i].text;
+                else s->redirect_in = toks[i].text;
+                i++;
+            } else {
+                if (s->argc < MAX_ARGS - 1) s->argv[s->argc++] = toks[i].text;
+                i++;
+            }
+        }
+        s->argv[s->argc] = 0;
+        nstages++;
+
+        if (i < ntoks && toks[i].type == TOK_PIPE) {
+            i++;
+            if (i >= ntoks) {
+                printf("sh: syntax error near '|'\n");
+                return -1;
+            }
+        }
+    }
+
+    return nstages;
+}
+
+/* ==================== PATH search ====================
+ * argv[0] containing a '/' (absolute or relative) bypasses PATH
+ * entirely and is used as-is, same as real shells. Otherwise every
+ * ':'-separated PATH entry is tried in order, confirmed with sys_stat
+ * (so "command not found" is reported up front instead of only after
+ * a failed execve). */
+static int resolve_command(const char *cmd, char *out_path, uint64_t out_size) {
+    for (uint64_t i = 0; cmd[i]; i++) {
+        if (cmd[i] == '/') {
+            copy_bounded(out_path, out_size, cmd);
+            return 0;
+        }
+    }
+
+    const char *path_env = env_get("PATH");
+    if (!path_env) path_env = "/bin";
+
+    const char *p = path_env;
+    while (*p) {
+        char dir[MAX_PATH];
+        uint64_t di = 0;
+        while (*p && *p != ':' && di < sizeof(dir) - 1) dir[di++] = *p++;
+        dir[di] = '\0';
+        if (*p == ':') p++;
+
+        char candidate[MAX_PATH];
+        uint64_t ci = 0;
+        for (uint64_t k = 0; dir[k] && ci < sizeof(candidate) - 1; k++) candidate[ci++] = dir[k];
+        if (ci == 0 || candidate[ci - 1] != '/') candidate[ci++] = '/';
+        for (uint64_t k = 0; cmd[k] && ci < sizeof(candidate) - 1; k++) candidate[ci++] = cmd[k];
+        candidate[ci] = '\0';
+
+        stat_t st;
+        if (sys_stat(candidate, &st) == 0 && st.type == VNODE_FILE_T) {
+            copy_bounded(out_path, out_size, candidate);
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+/* Runs in the child, right after fork(), before execve(). ">" creates
+ * the target fresh (sys_unlink then sys_create) rather than opening
+ * in place, since there's no O_TRUNC/truncate() yet -- this is how a
+ * real truncate-to-empty gets achieved with the ops we already have. */
+static int setup_redirections(stage_t *s) {
+    if (s->redirect_out) {
+        sys_unlink(s->redirect_out); /* best-effort -- fine if it didn't already exist */
+        sys_create(s->redirect_out);
+        long fd = sys_open(s->redirect_out);
+        if (fd < 0) {
+            printf("sh: cannot open %s for writing\n", s->redirect_out);
+            return -1;
+        }
+        sys_dup2((int)fd, 1);
+        sys_close((int)fd);
+    }
+    if (s->redirect_in) {
+        long fd = sys_open(s->redirect_in);
+        if (fd < 0) {
+            printf("sh: cannot open %s\n", s->redirect_in);
+            return -1;
+        }
+        sys_dup2((int)fd, 0);
+        sys_close((int)fd);
+    }
+    return 0;
+}
+
+/* ==================== builtins ====================
+ * cd/exit MUST be builtins -- a subprocess can never change its
+ * parent's working directory or terminate its parent. export/env
+ * could in principle be real /bin programs, but they need direct
+ * access to the shell's own env table, so they stay builtins too.
+ * None of these run inside a pipeline (nstages > 1) -- piping a
+ * builtin isn't supported, a documented scope cut. */
+static int run_builtin(stage_t *s) {
+    if (s->argc == 0) return 1; /* nothing to do, but "handled" */
+
+    if (strcmp(s->argv[0], "exit") == 0) {
+        int code = (s->argc > 1) ? str_to_int(s->argv[1]) : 0;
+        printf("bye!\n");
+        sys_exit(code);
+    }
+
+    if (strcmp(s->argv[0], "cd") == 0) {
+        const char *target = (s->argc > 1) ? s->argv[1] : env_get("HOME");
+        if (!target) target = "/";
+        if (sys_chdir(target) != 0) {
+            printf("cd: no such directory: %s\n", target);
+        }
+        return 1;
+    }
+
+    if (strcmp(s->argv[0], "export") == 0) {
+        for (int i = 1; i < s->argc; i++) {
+            if (is_assignment(s->argv[i])) do_assignment(s->argv[i]);
+            /* bare "export NAME" with no '=' is a no-op here -- there's
+             * no envp mechanism for it to mark anything as exported */
+        }
+        return 1;
+    }
+
+    if (strcmp(s->argv[0], "env") == 0) {
+        for (int i = 0; i < MAX_ENV; i++) {
+            if (env_vars[i].used) printf("%s=%s\n", env_vars[i].name, env_vars[i].value);
+        }
+        return 1;
+    }
+
+    return 0; /* not a builtin */
+}
+
+/* ==================== pipeline execution ==================== */
+static void run_pipeline(stage_t *stages, int nstages) {
+    if (nstages == 1 && run_builtin(&stages[0])) return;
+    if (nstages == 1 && stages[0].argc == 0) return;
+
+    int pipe_fds[MAX_STAGES - 1][2];
+    for (int i = 0; i < nstages - 1; i++) {
+        if (sys_pipe(pipe_fds[i]) != 0) {
+            printf("sh: pipe failed\n");
+            return;
+        }
+    }
+
+    int child_pids[MAX_STAGES];
+    for (int i = 0; i < nstages; i++) {
+        long pid = sys_fork();
+
+        if (pid == 0) {
+            if (i > 0) sys_dup2(pipe_fds[i - 1][0], 0);
+            if (i < nstages - 1) sys_dup2(pipe_fds[i][1], 1);
+
+            /* every pipe's BOTH ends get closed here, in every child --
+             * including the ones we just dup2()'d, since dup2 leaves
+             * the original fd open too. Skipping this is the classic
+             * pipe deadlock: a stray extra reference to the write end
+             * sitting in some unrelated process means the reader never
+             * sees write_refcount hit zero, and blocks forever. */
+            for (int j = 0; j < nstages - 1; j++) {
+                sys_close(pipe_fds[j][0]);
+                sys_close(pipe_fds[j][1]);
+            }
+
+            if (setup_redirections(&stages[i]) != 0) sys_exit(1);
+            if (stages[i].argc == 0) sys_exit(0);
+
+            char path[MAX_PATH];
+            if (resolve_command(stages[i].argv[0], path, sizeof(path)) != 0) {
+                printf("%s: command not found\n", stages[i].argv[0]);
+                sys_exit(127);
+            }
+
+            sys_execve(path, stages[i].argv);
+            printf("%s: exec failed\n", stages[i].argv[0]);
+            sys_exit(127);
+        } else if (pid > 0) {
+            child_pids[i] = (int)pid;
+        } else {
+            printf("sh: fork failed\n");
+            child_pids[i] = -1;
+        }
+    }
+
+    /* the shell's OWN copies of every pipe fd must close too, for
+     * exactly the same reason as above -- otherwise the shell itself
+     * is the stray reference that keeps a pipe end alive forever. */
+    for (int j = 0; j < nstages - 1; j++) {
+        sys_close(pipe_fds[j][0]);
+        sys_close(pipe_fds[j][1]);
+    }
+
+    for (int i = 0; i < nstages; i++) {
+        if (child_pids[i] > 0) {
+            int status = 0;
+            sys_waitpid(child_pids[i], &status);
+        }
+    }
 }
 
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
 
-    printf("\nISUNUX shell -- type a command (try: ls, cat hello.txt, hello, echo hi)\n");
+    env_set("PATH", "/bin");
+    env_set("HOME", "/");
+
+    printf("\nISUNUX shell -- type a command (try: ls, echo hi | cat, cat hello.txt > /tmp/copy.txt)\n");
 
     for (;;) {
         printf("$ ");
@@ -47,44 +408,23 @@ int main(int argc, char **argv) {
         char line[MAX_LINE];
         long n = sys_read(0, line, sizeof(line) - 1);
         if (n <= 0) continue;
+        if (n > 0 && line[n - 1] == '\n') n--;
         line[n] = '\0';
 
-        char *cmd_argv[MAX_ARGS];
-        int cmd_argc = split_line(line, cmd_argv);
-        if (cmd_argc == 0) continue; /* just Enter on an empty line */
+        token_t toks[MAX_TOKENS];
+        int ntoks = tokenize(line, toks, MAX_TOKENS);
+        if (ntoks == 0) continue; /* just Enter on an empty line */
 
-        /* cd and exit MUST be builtins -- a subprocess can never change
-         * its parent's working directory or terminate its parent, so
-         * these two can't be implemented as separate /bin/ programs no
-         * matter how the rest of the shell is designed */
-        if (strcmp(cmd_argv[0], "exit") == 0) {
-            printf("bye!\n");
-            sys_exit(0);
-        }
-
-        if (strcmp(cmd_argv[0], "cd") == 0) {
-            const char *target = (cmd_argc > 1) ? cmd_argv[1] : "/";
-            if (sys_chdir(target) != 0) {
-                printf("cd: no such directory: %s\n", target);
-            }
+        if (ntoks == 1 && toks[0].type == TOK_WORD && is_assignment(toks[0].text)) {
+            do_assignment(toks[0].text);
             continue;
         }
 
-        char path[MAX_PATH];
-        build_bin_path(path, sizeof(path), cmd_argv[0]);
+        stage_t stages[MAX_STAGES];
+        int nstages = parse_pipeline(toks, ntoks, stages, MAX_STAGES);
+        if (nstages <= 0) continue;
 
-        long pid = sys_fork();
-        if (pid == 0) {
-            sys_execve(path, cmd_argv);
-            /* only reached if execve failed */
-            printf("%s: command not found\n", cmd_argv[0]);
-            sys_exit(127);
-        } else if (pid > 0) {
-            int status = 0;
-            sys_waitpid((int)pid, &status);
-        } else {
-            printf("fork failed!\n");
-        }
+        run_pipeline(stages, nstages);
     }
 
     return 0;

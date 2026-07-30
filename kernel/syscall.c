@@ -13,6 +13,14 @@ static void sys_exit(int code) {
 
     process_t *proc = process_current();
     if (proc) {
+        /* real Unix closes every fd on process exit too -- without
+         * this, a child holding the write end of a pipe that just
+         * exits (rather than explicitly close()ing first, which is
+         * the completely normal case) would never trigger EOF for
+         * whoever's reading the other end, and they'd block forever. */
+        for (int fd = 0; fd < MAX_FDS; fd++) {
+            process_close(proc, fd);
+        }
         process_mark_zombie(proc, code);
     }
 
@@ -120,6 +128,23 @@ void syscall_handler(interrupt_frame_t *frame) {
             const char *path = (const char *)frame->rdi;
             vfs_stat_t *out = (vfs_stat_t *)frame->rsi;
             frame->rax = (uint64_t)(int64_t)process_stat(proc, path, out);
+            break;
+        }
+        case SYS_DUP2: {
+            int oldfd = (int)frame->rdi;
+            int newfd = (int)frame->rsi;
+            frame->rax = (uint64_t)(int64_t)process_dup2(proc, oldfd, newfd);
+            break;
+        }
+        case SYS_PIPE: {
+            int *fds_out = (int *)frame->rdi;
+            int fds[2];
+            int ret = process_pipe(proc, fds);
+            if (ret == 0) {
+                fds_out[0] = fds[0];
+                fds_out[1] = fds[1];
+            }
+            frame->rax = (uint64_t)(int64_t)ret;
             break;
         }
         case SYS_EXIT: {
