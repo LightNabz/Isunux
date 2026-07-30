@@ -1,29 +1,16 @@
 #include "serial.h"
 #include "kutil.h"
 #include "limine.h"
+#include "fb.h"
 
 #define COM1 0x3f8
 
-__attribute__((used, section(".requests")))
-static volatile struct limine_terminal_request terminal_request = {
-    .id = LIMINE_TERMINAL_REQUEST,
-    .revision = 0,
-    .callback = NULL,
-};
-
-static uint64_t terminal_strlen(const char *s) {
-    uint64_t len = 0;
-    while (s[len]) len++;
-    return len;
-}
-
-static void terminal_putc(char c) {
-    if (!terminal_request.response || terminal_request.response->terminal_count == 0) return;
-    struct limine_terminal *term = terminal_request.response->terminals[0];
-    if (!term || !terminal_request.response->write) return;
-    char buf[1] = { c };
-    terminal_request.response->write(term, buf, 1);
-}
+/* NOTE: this used to also poke the Limine *Terminal* protocol
+ * (LIMINE_TERMINAL_REQUEST), but that protocol is deprecated in the
+ * Limine revision this kernel targets and its response never actually
+ * comes back non-NULL here -- so that code path was silently dead.
+ * On-screen output now goes through fb.c (the framebuffer protocol),
+ * which fb_init() sets up during early boot; see kernel.c. */
 
 void serial_init(void) {
     outb(COM1 + 1, 0x00); /* disable interrupts */
@@ -42,7 +29,7 @@ static int serial_tx_ready(void) {
 void serial_putc(char c) {
     while (!serial_tx_ready()) { }
     outb(COM1, (uint8_t)c);
-    terminal_putc(c);
+    fb_putc(c);
 }
 
 void serial_print(const char *s) {

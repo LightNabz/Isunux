@@ -4,3 +4,4 @@
 *_elf
 iso_root
 iso_root/*
+*.tar.gz

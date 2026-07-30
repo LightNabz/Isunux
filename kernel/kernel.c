@@ -18,6 +18,7 @@
 #include "process.h"
 #include "elf.h"
 #include "userstack.h"
+#include "fb.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -46,6 +47,12 @@ static volatile struct limine_kernel_address_request kaddr_request = {
     .revision = 0,
 };
 
+__attribute__((used, section(".requests")))
+static volatile struct limine_framebuffer_request framebuffer_request = {
+    .id = LIMINE_FRAMEBUFFER_REQUEST,
+    .revision = 0,
+};
+
 static void hcf(void) {
     for (;;) {
         asm volatile ("cli; hlt");
@@ -58,6 +65,14 @@ void _start(void) {
     }
 
     serial_init();
+
+    /* set up the on-screen console as early as we can, so everything
+     * printed from here on (via serial_print/serial_putc) shows up
+     * both on the serial port and on screen. If Limine didn't hand us
+     * a framebuffer, fb_putc()/fb_print() just stay no-ops. */
+    if (framebuffer_request.response != NULL) {
+        fb_init(framebuffer_request.response);
+    }
 
     gdt_init();
     pic_remap();
