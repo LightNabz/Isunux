@@ -1,5 +1,5 @@
 #include "keyboard.h"
-#include "serial.h"
+#include "term.h"
 #include "task.h"
 
 /* Set 1 scancodes, US QWERTY. Unmapped entries (0) are keys we don't
@@ -79,13 +79,13 @@ static void commit_char(char c) {
     if (c == '\b') {
         if (edit_len > 0) {
             edit_len--;
-            serial_print("\b \b"); /* move back, blank the character, move back again */
+            term_print("\b \b"); /* move back, blank the character, move back again */
         }
         return;
     }
 
     if (c == '\n') {
-        serial_putc('\n'); /* echo the newline itself */
+        term_putc('\n'); /* echo the newline itself */
         for (uint32_t i = 0; i < edit_len; i++) kbd_queue_push(edit_line[i]);
         kbd_queue_push('\n');
         edit_len = 0;
@@ -94,7 +94,7 @@ static void commit_char(char c) {
 
     if (edit_len < EDIT_LINE_MAX - 1) {
         edit_line[edit_len++] = c;
-        serial_putc(c); /* echo what was typed -- "cooked mode" */
+        term_putc(c); /* echo what was typed -- "cooked mode" */
     }
 }
 

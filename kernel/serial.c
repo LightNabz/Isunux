@@ -1,16 +1,20 @@
 #include "serial.h"
 #include "kutil.h"
 #include "limine.h"
-#include "fb.h"
 
 #define COM1 0x3f8
 
-/* NOTE: this used to also poke the Limine *Terminal* protocol
+/* This is the kernel's internal debug log: COM1 only, always, no
+ * exceptions -- it must NEVER touch the screen (see term.c for the
+ * thing that does). elf_load()'s segment dumps, syscall.c's exit
+ * trace, boot messages, etc. all go through here and are meant for a
+ * developer tailing -serial stdio, not for whatever a user's shell
+ * happens to be doing on screen at the same time.
+ *
+ * NOTE: this used to also poke the Limine *Terminal* protocol
  * (LIMINE_TERMINAL_REQUEST), but that protocol is deprecated in the
  * Limine revision this kernel targets and its response never actually
- * comes back non-NULL here -- so that code path was silently dead.
- * On-screen output now goes through fb.c (the framebuffer protocol),
- * which fb_init() sets up during early boot; see kernel.c. */
+ * comes back non-NULL here -- so that code path was silently dead. */
 
 void serial_init(void) {
     outb(COM1 + 1, 0x00); /* disable interrupts */
@@ -29,7 +33,6 @@ static int serial_tx_ready(void) {
 void serial_putc(char c) {
     while (!serial_tx_ready()) { }
     outb(COM1, (uint8_t)c);
-    fb_putc(c);
 }
 
 void serial_print(const char *s) {

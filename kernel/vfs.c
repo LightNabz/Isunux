@@ -1,6 +1,7 @@
 #include "vfs.h"
 #include "tmpfs.h"
 #include "kutil.h"
+#include "devfs.h"
 
 static vnode_t *root_vnode;
 
@@ -58,6 +59,15 @@ void vfs_init(void) {
     tmpfs_create_dir((tmpfs_node_t *)root_vnode, "tmp");
     tmpfs_create_dir((tmpfs_node_t *)root_vnode, "etc");
     tmpfs_create_dir((tmpfs_node_t *)root_vnode, "home");
+
+    /* /dev is still an ordinary tmpfs directory as far as the tree is
+     * concerned (that's what makes "/dev" resolvable at all, and what
+     * makes ".." out of it work via the same vnode->parent convention
+     * every other directory uses) -- devfs_install() just swaps its
+     * ops so that looking *inside* it serves devices instead of
+     * tmpfs-backed files. */
+    tmpfs_node_t *dev_dir = tmpfs_create_dir((tmpfs_node_t *)root_vnode, "dev");
+    devfs_install(&dev_dir->vnode);
 }
 
 vnode_t *vfs_root(void) {
@@ -128,4 +138,35 @@ int vfs_readdir_path(const char *cwd, const char *path, int index, char *name_ou
     vnode_t *node = vfs_resolve_path_cwd(cwd, path);
     if (!node || node->type != VNODE_DIR || !node->ops || !node->ops->readdir) return -1;
     return node->ops->readdir(node, index, name_out, name_out_size);
+}
+
+void vfs_canonical_path(vnode_t *node, char *out, uint64_t out_size) {
+    /* Walk up via ->parent, collecting each ancestor (but not the
+     * root itself -- root's own name is "/" and gets printed as the
+     * leading separator instead). VFS_MAX_PATH is small, and a path
+     * can't have more components than it has bytes, so a fixed-size
+     * stack sized off out_size is always enough. */
+    vnode_t *stack[VFS_MAX_PATH];
+    int depth = 0;
+
+    vnode_t *cur = node;
+    while (cur->parent != cur && depth < VFS_MAX_PATH) {
+        stack[depth++] = cur;
+        cur = cur->parent;
+    }
+    /* cur is now the root (root is its own parent) */
+
+    uint64_t i = 0;
+    if (out_size > 0) out[0] = '/';
+    i = (out_size > 0) ? 1 : 0;
+
+    for (int d = depth - 1; d >= 0; d--) {
+        const char *name = stack[d]->name;
+        uint64_t j = 0;
+        while (name[j] && i + 1 < out_size) out[i++] = name[j++];
+        if (d != 0 && i + 1 < out_size) out[i++] = '/';
+    }
+
+    if (i < out_size) out[i] = '\0';
+    else if (out_size > 0) out[out_size - 1] = '\0';
 }

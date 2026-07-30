@@ -64,3 +64,13 @@ vnode_t *vfs_resolve_path_cwd(const char *cwd, const char *path);
  * directory file descriptors yet -- simplest thing that actually
  * works, matches the rest of this project's scope philosophy. */
 int vfs_readdir_path(const char *cwd, const char *path, int index, char *name_out, uint64_t name_out_size);
+
+/* Rebuilds the canonical absolute path for a vnode by walking up its
+ * parent chain to the root and printing the names root-to-leaf. This
+ * is what real Unix kernels effectively do on every chdir(): whatever
+ * you typed ("..", ".", a relative path) gets resolved down to a
+ * vnode, and the STORED cwd becomes that vnode's real, minimal path --
+ * never the raw string you typed. Without this, a cwd built purely by
+ * string-concatenating "cd" arguments (see vfs_combine_path) would
+ * grow forever, e.g. "/../home/../etc", instead of just "/etc". */
+void vfs_canonical_path(vnode_t *node, char *out, uint64_t out_size);

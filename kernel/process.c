@@ -1,46 +1,13 @@
 #include "process.h"
-#include "serial.h"
 #include "kutil.h"
 #include "pmm.h"
 #include "vmm.h"
 #include "task.h"
-#include "keyboard.h"
+#include "devfs.h"
 
 static process_t process_pool[MAX_PROCESSES];
 static int process_count = 0;
 static int next_pid = 1;
-
-/* The console isn't backed by tmpfs at all -- its read/write just call
- * straight into the serial driver. This is what lets SYS_WRITE stop
- * being "hardcoded to serial" and become genuinely "write to whatever
- * fd you were given": fd 1 just happens to point at a vnode whose write
- * op is the serial driver, and every other fd works through the exact
- * same process_write() path. */
-static long console_write(vnode_t *node, const void *buf, uint64_t count, uint64_t offset) {
-    (void)node;
-    (void)offset;
-    const char *s = (const char *)buf;
-    for (uint64_t i = 0; i < count; i++) serial_putc(s[i]);
-    return (long)count;
-}
-
-static long console_read(vnode_t *node, void *buf, uint64_t count, uint64_t offset) {
-    (void)node;
-    (void)offset;
-    return keyboard_read(buf, count);
-}
-
-static vnode_ops_t console_ops = {
-    .read = console_read,
-    .write = console_write,
-    .lookup = NULL,
-};
-
-static vnode_t console_vnode = {
-    .type = VNODE_FILE,
-    .name = "console",
-    .ops = &console_ops,
-};
 
 process_t *process_alloc(int parent_pid) {
     for (int i = 0; i < MAX_PROCESSES; i++) {
@@ -64,7 +31,7 @@ void process_init(process_t *p, uint64_t pml4_phys, uint64_t heap_start) {
     p->cwd[1] = '\0';
 
     for (int fd = 0; fd < 3; fd++) {
-        p->fds[fd].node = &console_vnode;
+        p->fds[fd].node = devfs_console_vnode();
         p->fds[fd].offset = 0;
         p->fds[fd].used = 1;
     }
@@ -150,13 +117,16 @@ int process_open(process_t *p, const char *path) {
 }
 
 int process_chdir(process_t *p, const char *path) {
-    char new_cwd[VFS_MAX_PATH];
-    vfs_combine_path(p->cwd, path, new_cwd, sizeof(new_cwd));
+    char combined[VFS_MAX_PATH];
+    vfs_combine_path(p->cwd, path, combined, sizeof(combined));
 
-    vnode_t *node = vfs_resolve_path(new_cwd);
+    vnode_t *node = vfs_resolve_path(combined);
     if (!node || node->type != VNODE_DIR) return -1;
 
-    for (int i = 0; i < VFS_MAX_PATH; i++) p->cwd[i] = new_cwd[i];
+    /* store the canonical path, not the raw combined string -- so cwd
+     * is always a clean "/etc", never "/../home/../etc", no matter
+     * how many ".."s the user typed to get there. */
+    vfs_canonical_path(node, p->cwd, VFS_MAX_PATH);
     return 0;
 }
 
