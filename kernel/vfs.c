@@ -2,41 +2,19 @@
 #include "tmpfs.h"
 #include "kutil.h"
 #include "devfs.h"
+#include "limine.h"
 
 static vnode_t *root_vnode;
 
-/* every embedded ELF, one pair of symbols per program name, generated
- * by the Makefile's %_blob.asm rule (kernel/userprog/NAME_blob.asm) */
-extern uint8_t user_hello_elf_start[], user_hello_elf_end[];
-extern uint8_t user_sh_elf_start[], user_sh_elf_end[];
-extern uint8_t user_echo_elf_start[], user_echo_elf_end[];
-extern uint8_t user_cat_elf_start[], user_cat_elf_end[];
-extern uint8_t user_ls_elf_start[], user_ls_elf_end[];
-extern uint8_t user_mkdir_elf_start[], user_mkdir_elf_end[];
-extern uint8_t user_touch_elf_start[], user_touch_elf_end[];
-extern uint8_t user_rm_elf_start[], user_rm_elf_end[];
-extern uint8_t user_pwd_elf_start[], user_pwd_elf_end[];
+static const char *basename_of(const char *path) {
+    const char *base = path;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/') base = p + 1;
+    }
+    return base;
+}
 
-typedef struct {
-    const char *name;
-    uint8_t *start;
-    uint8_t *end;
-} embedded_binary_t;
-
-static embedded_binary_t embedded_binaries[] = {
-    { "sh",    user_sh_elf_start,    user_sh_elf_end },
-    { "hello", user_hello_elf_start, user_hello_elf_end },
-    { "echo",  user_echo_elf_start,  user_echo_elf_end },
-    { "cat",   user_cat_elf_start,   user_cat_elf_end },
-    { "ls",    user_ls_elf_start,    user_ls_elf_end },
-    { "mkdir", user_mkdir_elf_start, user_mkdir_elf_end },
-    { "touch", user_touch_elf_start, user_touch_elf_end },
-    { "rm",    user_rm_elf_start,    user_rm_elf_end },
-    { "pwd",   user_pwd_elf_start,   user_pwd_elf_end },
-};
-#define EMBEDDED_BINARY_COUNT (sizeof(embedded_binaries) / sizeof(embedded_binaries[0]))
-
-void vfs_init(void) {
+void vfs_init(struct limine_module_response *modules) {
     tmpfs_init();
     root_vnode = tmpfs_get_root();
 
@@ -47,15 +25,19 @@ void vfs_init(void) {
     const char *content = "this file lives in tmpfs, mapped through the vfs.\n";
     hello->vnode.ops->write(&hello->vnode, content, k_strlen(content), 0);
 
-    /* seed every real executable ISUNUX ships, exactly the way any of
-     * them would be loaded by exec() -- same embedded bytes the kernel
-     * shipped with, just reachable as real paths via genuine tmpfs
-     * read/write, no special-casing any one of them. */
+    /* /bin is populated entirely from whatever boot modules Limine
+     * handed us -- each module's basename becomes its filename under
+     * /bin, bytes copied in through the exact same write() op any
+     * syscall would use (so /bin stays an ordinary, mutable part of
+     * tmpfs, not some special read-only region). This loop doesn't
+     * know or care what any of these programs are named. */
     tmpfs_node_t *bin_dir = tmpfs_create_dir((tmpfs_node_t *)root_vnode, "bin");
-    for (unsigned i = 0; i < EMBEDDED_BINARY_COUNT; i++) {
-        tmpfs_node_t *f = tmpfs_create_file(bin_dir, embedded_binaries[i].name);
-        uint64_t size = (uint64_t)(embedded_binaries[i].end - embedded_binaries[i].start);
-        f->vnode.ops->write(&f->vnode, embedded_binaries[i].start, size, 0);
+    if (modules) {
+        for (uint64_t i = 0; i < modules->module_count; i++) {
+            struct limine_file *mod = modules->modules[i];
+            tmpfs_node_t *f = tmpfs_create_file(bin_dir, basename_of(mod->path));
+            f->vnode.ops->write(&f->vnode, mod->address, mod->size, 0);
+        }
     }
 
     /* minimal standard layout -- just the directories that are

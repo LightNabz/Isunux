@@ -53,6 +53,18 @@ static volatile struct limine_framebuffer_request framebuffer_request = {
     .revision = 0,
 };
 
+/* internal_module_count stays 0 -- that's what tells Limine "just give
+ * me everything declared via module_path: in limine.conf", rather than
+ * the kernel demanding specific paths by name. That's the whole point:
+ * this file doesn't know or care what modules exist, see vfs_init(). */
+__attribute__((used, section(".requests")))
+static volatile struct limine_module_request module_request = {
+    .id = LIMINE_MODULE_REQUEST,
+    .revision = 0,
+    .internal_module_count = 0,
+    .internal_modules = NULL,
+};
+
 static void hcf(void) {
     for (;;) {
         asm volatile ("cli; hlt");
@@ -96,7 +108,7 @@ void _start(void) {
     vmm_init(hhdm_offset, kernel_phys, kernel_virt);
     serial_print("\n[ok] pmm + vmm initialized, cr3 on our own kernel tables\n");
 
-    vfs_init();
+    vfs_init((struct limine_module_response *)module_request.response);
     serial_print("[ok] vfs initialized (tmpfs root, seeded /hello.txt)\n");
 
     serial_print("\n========================================\n");

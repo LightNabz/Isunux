@@ -77,7 +77,21 @@ typedef struct vnode {
                   * what this field is for instead. */
 } vnode_t;
 
-void vfs_init(void);
+struct limine_module_response; /* from limine.h -- forward-declared here
+                                 * so vfs.h doesn't need to depend on the
+                                 * boot-protocol header just for one
+                                 * pointer type */
+
+/* Sets up tmpfs, seeds the standard directory layout, and populates
+ * /bin entirely from Limine boot modules (see kernel.c's
+ * limine_module_request and boot/limine.conf's generated module_path
+ * lines -- one per program under bin/, written by the Makefile). This
+ * function has zero knowledge of what programs exist: adding, removing,
+ * or updating a userland program never touches this file, or
+ * kernel.elf at all. modules may be NULL (bootloader gave us none, or
+ * an older Limine that doesn't support the request) -- /bin just ends
+ * up empty in that case, everything else still boots fine. */
+void vfs_init(struct limine_module_response *modules);
 vnode_t *vfs_root(void);
 
 /* Absolute paths only ("/foo/bar"), walked one component at a time via

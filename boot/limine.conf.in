@@ -1,0 +1,6 @@
+timeout: 0
+default_entry: 1
+
+/myos
+    protocol: limine
+    path: boot():/boot/kernel.elf
