@@ -15,3 +15,4 @@ void fb_init(struct limine_framebuffer_response *response);
 bool fb_available(void);
 void fb_putc(char c);
 void fb_print(const char *s);
+void fb_clear(void);

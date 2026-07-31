@@ -109,6 +109,13 @@ void fb_init(struct limine_framebuffer_response *response) {
     inited = true;
 }
 
+void fb_clear(void) {
+    if (!inited) return;
+    fb_fill_rows(0, (uint32_t)fb->height, bg_color);
+    cursor_col = 0;
+    cursor_row = 0;
+}
+
 bool fb_available(void) {
     return inited;
 }

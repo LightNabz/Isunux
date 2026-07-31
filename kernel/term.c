@@ -3,6 +3,11 @@
 #include "fb.h"
 
 void term_putc(char c) {
+    if (c == '\f') {
+        fb_clear();
+        return;
+    }
+
     serial_putc(c); /* reuse the COM1 primitive -- it's just a hardware
                       * byte write at this point, nothing debug-specific
                       * about the byte itself, only about who calls it */
