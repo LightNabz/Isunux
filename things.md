@@ -43,7 +43,7 @@
 - Panic/debugging infrastructure — kernel backtraces on crash, maybe a minimal in-kernel debugger or at least symbol-aware panic output instead of just `hcf()` halting silently. This is invisible when things work and invaluable the moment Tier 1-3 work starts introducing real bugs — arguably should be pulled earlier, honestly, since it pays for itself the moment SMP or swap gets attempted.
 - Syslog / kernel log ring buffer — right now everything goes straight to serial; a queryable in-kernel log (readable from userland via `/dev` or a syscall) is a small, classic "grown-up OS" feature.
 
-## Tier Beyond
+# Tier Beyond
 
 - Replace the blocky 8x16 font
 - Add tiling terminal manager for multi-tasking
