@@ -20,9 +20,10 @@
 
 # Tier 3 — Shell/userland maturity
 
-- Pipes and redirection actually wired into the shell (`|`, `>`, `<`) — `pipe.c` exists at the kernel level; whether `bin/sh/main.c` actually exposes shell syntax for it matters a lot for feel.
+- Linux static-binary syscall compatibility — renumber the syscall table to match Linux x86_64 ABI (`write`=1, `close`=3, `stat`=4, `open`=2, `pipe`=22, `dup2`=33, `unlink`=87, `brk`=12, `getcwd`=79, `chdir`=80, `mkdir`=83, `getdents64`=217 in place of `SYS_READDIR`, `fork`=57, `execve`=59, `wait4`=61 in place of `SYS_WAITPID`, `exit`=60/`exit_group`=231 in place of `SYS_EXIT`), plus add `mmap`=9, `arch_prctl`=158, `set_tid_address`=218, and `set_robust_list`=273 (the last two can be safe no-op stubs). Requires `mmap()` from Tier 1. Unlocks running real static-linked Linux binaries (coreutils, Lua, etc.) unmodified — `elf_load()` in `elf.c` already loads generic ELF64/x86_64 PT_LOAD segments and doesn't gate on `e_ident[EI_OSABI]`, so the loader side needs no changes. `mini_libc` and ISUNUX's own hand-written programs are unaffected — this only changes what number each syscall answers to, not any kernel internals. Do this while the syscall table is still small (~18 entries) — the same change gets expensive once more syscalls, `errno` conventions (Tier 4), or userland code hardcode the current numbers.
+- Pipes and redirection actually wired into the shell (`|`, `>`, `<`) — `pipe.c` exists at the kernel level; whether `bin/sh/main.c` actually exposes shell syntax for it matters a lot for feel. Sequence alongside the syscall compat item above, not after — a borrowed `grep` binary is useless in the shell without pipes to feed it.
 - Environment variables (`PATH`, `HOME`, etc.) and `execve()` actually searching `PATH` rather than requiring full paths.
-- More coreutils depth — the current set (`ls`, `cat`, `echo`, `mkdir`, `pwd`, `touch`, `rm`) covers the absolute basics; things like `cp`, `mv`, `grep`, `ln` are what make it feel like you can actually do things rather than just poke at a demo.
+- More coreutils depth — the current set (`ls`, `cat`, `echo`, `mkdir`, `pwd`, `touch`, `rm`) covers the absolute basics; things like `cp`, `mv`, `grep`, `ln` are what make it feel like you can actually do things rather than just poke at a demo. Becomes optional (rather than the only path) once Linux static-binary compat lands, since those utilities can then be borrowed as static-linked Linux binaries instead of hand-written against `mini_libc`.
 
 # Tier 4 — Polish that separates "cooked" from merely "functional"
 
