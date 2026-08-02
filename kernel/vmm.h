@@ -50,3 +50,13 @@ void vmm_clone_lower_half(uint64_t dest_pml4_phys, uint64_t src_pml4_phys);
 /* Switch CR3 to a given address space (the kernel's own, or one from
  * vmm_new_address_space()). */
 void vmm_activate(uint64_t pml4_phys);
+
+/* Tears down everything vmm_new_address_space() + vmm_clone_lower_half()
+ * (or vmm_map_4k_in()) built: walks the LOW half only (PML4 indices
+ * 0-255 -- see vmm_clone_lower_half's comment on why the high half is
+ * never touched, it's the shared kernel/HHDM tables), pmm_free_page()-ing
+ * every present leaf mapping, then every now-empty PT/PD/PDPT page on
+ * the way back up, then finally the PML4 page itself. Caller must not
+ * still be running under this address space -- switch CR3 elsewhere
+ * (vmm_activate) first, same ordering rule as freeing your own stack. */
+void vmm_destroy_address_space(uint64_t pml4_phys);

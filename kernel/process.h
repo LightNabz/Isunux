@@ -68,16 +68,20 @@ int process_chdir(process_t *p, const char *path);
 uint64_t process_brk(process_t *p, uint64_t new_brk);
 
 /* Called by sys_exit -- records the exit code and marks this process a
- * zombie, so a parent's waitpid() can observe it. Doesn't tear down the
- * address space or task slot -- that's a documented scope cut, same
- * spirit as pmm_free_page() never returning memory to the OS. */
+ * zombie, so a parent's waitpid() can observe it. The address space
+ * stays alive until a parent actually reaps it via waitpid() (below) --
+ * a zombie's pml4_phys has to remain valid for exactly as long as the
+ * exit code does, since both are only readable through the same
+ * process_t slot. The task slot is reclaimed separately, whenever
+ * task_alloc_raw() next needs to recycle it -- see task.c. */
 void process_mark_zombie(process_t *p, int exit_code);
 
 /* target_pid == -1 means "any child". Blocks (cooperatively yielding)
- * until a matching child becomes a zombie, then reaps it -- clears its
- * zombie flag and returns its pid, writing its exit code to
- * *status_out if non-NULL. Returns -1 immediately if the calling
- * process has no children matching target_pid at all. */
+ * until a matching child becomes a zombie, then reaps it -- tears down
+ * its address space (vmm_destroy_address_space), clears its zombie
+ * flag, and returns its pid, writing its exit code to *status_out if
+ * non-NULL. Returns -1 immediately if the calling process has no
+ * children matching target_pid at all. */
 int64_t process_waitpid(process_t *self, int target_pid, int *status_out);
 
 /* Resolves to task_current()'s associated process -- the process the

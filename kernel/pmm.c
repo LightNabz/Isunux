@@ -130,6 +130,12 @@ void pmm_free_page(uint64_t phys_addr) {
     if (idx < scan_hint) scan_hint = idx; /* next alloc should reuse this */
 }
 
+void pmm_free_pages(uint64_t phys_addr, uint64_t count) {
+    for (uint64_t i = 0; i < count; i++) {
+        pmm_free_page(phys_addr + i * PAGE_SIZE);
+    }
+}
+
 void pmm_print_stats(void) {
     serial_print("[pmm] total: ");
     serial_print_dec(total_pages);

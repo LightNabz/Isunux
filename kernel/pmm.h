@@ -23,4 +23,10 @@ uint64_t pmm_alloc_pages(uint64_t count);
 
 void pmm_free_page(uint64_t phys_addr);
 
+/* Frees `count` pages starting at phys_addr -- the multi-page
+ * counterpart to pmm_alloc_pages(), for giving back a stack or similar
+ * contiguous allocation in one call instead of a manual per-page loop
+ * at every call site. */
+void pmm_free_pages(uint64_t phys_addr, uint64_t count);
+
 void pmm_print_stats(void);

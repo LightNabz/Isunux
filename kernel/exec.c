@@ -90,11 +90,19 @@ int64_t do_exec(interrupt_frame_t *frame, const char *path, char **user_argv) {
      * this point we commit. Same process, same pid, same fd table
      * (real execve() preserves open files across an exec), but an
      * entirely fresh address space and a fresh heap. */
+    uint64_t old_pml4 = proc->pml4_phys;
     proc->pml4_phys = new_pml4;
     proc->heap_start = heap_start;
     proc->heap_end = heap_start;
 
     vmm_activate(new_pml4);
+
+    /* old_pml4 is safe to tear down now -- CR3 no longer points at it,
+     * and it was never shared with anyone (fork() gives every child its
+     * own copy, exec() never shares address spaces). Without this, every
+     * fork()+exec() pair -- the standard shell pattern -- would leak a
+     * full address space, not just a process that never gets reaped. */
+    vmm_destroy_address_space(old_pml4);
 
     /* overwrite the CURRENT trap frame in place -- isr128's normal
      * epilogue (pop registers, iretq) runs right after syscall_handler

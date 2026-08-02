@@ -11,6 +11,7 @@ typedef enum {
 typedef struct task {
     uint64_t rsp;             /* saved stack pointer -- only valid while NOT running */
     uint64_t stack_phys;       /* base of this task's kernel stack, for bookkeeping */
+    uint64_t stack_pages;      /* how many pages stack_phys spans -- needed to free it correctly on recycle */
     uint64_t kernel_stack_top; /* what TSS.rsp0 gets set to whenever this task is scheduled in */
 
     void (*entry)(void);      /* for plain kernel-function tasks (task_create) */

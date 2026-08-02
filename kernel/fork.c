@@ -43,6 +43,7 @@ int64_t do_fork(interrupt_frame_t *parent_frame) {
         return -1;
     }
     child_task->stack_phys = kstack_phys;
+    child_task->stack_pages = FORK_KSTACK_PAGES;
 
     uint64_t kstack_top = vmm_hhdm_offset() + kstack_phys + (FORK_KSTACK_PAGES * PAGE_SIZE);
     child_task->kernel_stack_top = kstack_top;

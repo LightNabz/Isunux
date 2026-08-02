@@ -1,5 +1,5 @@
 override KERNEL := kernel.elf
-override ISO := myos.iso
+override ISO := isunux.iso
 
 CC := gcc
 LD := ld

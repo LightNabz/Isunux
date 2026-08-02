@@ -49,3 +49,9 @@
 - Replace the blocky 8x16 font
 - Add tiling terminal manager for multi-tasking
 - Actual internet? ;3
+
+# So what's my plan?
+We gonna finish tier 0 to 2 first as it is the most fundamental part, then we're going to continue to the tier 3 where we're going to make our userland mature by also adopting Linux static-linked binary. Tier 4 and beyond will be just finishing I'd do in my free time later.
+
+## Feedback
+I'd very gladly accept feedback! as I myself is learning here. I need this specific feedback about what should be the identity of Isunux that differ it from "just another hobbyist Unix-like" despite its initial goal as well documented, well commented, easy to learn, and easy reference for everyone.

@@ -76,6 +76,7 @@ for (int i = 0; i < MAX_PROCESSES; i++) {
         if (p->is_zombie) {
             int reaped_pid = p->pid;
             if (status_out) *status_out = p->exit_code;
+            vmm_destroy_address_space(p->pml4_phys); /* last chance -- p->pml4_phys is gone after the memset below */
             k_memset(p, 0, sizeof(*p));
             process_count--;
             return reaped_pid;

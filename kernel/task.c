@@ -91,6 +91,14 @@ task_t *task_alloc_raw(const char *name) {
         t = find_terminated_task();
         if (t) {
             unlink_task_from_ring(t);
+            /* this slot's previous occupant is done for good -- it was
+             * already unlinked from the ring above, so its kernel stack
+             * will never be resumed again. Free it now, before
+             * task_create()/task_create_user() allocates a brand new one
+             * on top and this pointer is gone for good. */
+            if (t->stack_phys && t->stack_pages) {
+                pmm_free_pages(t->stack_phys, t->stack_pages);
+            }
         }
     }
 
@@ -108,6 +116,7 @@ task_t *task_alloc_raw(const char *name) {
     t->state = TASK_READY;
     t->rsp = 0;
     t->stack_phys = 0;
+    t->stack_pages = 0;
 
     /* splice into the ring right after the current task */
     t->next = current_task->next;
@@ -127,6 +136,7 @@ task_t *task_create(const char *name, void (*entry)(void)) {
         return NULL;
     }
     t->stack_phys = stack_phys;
+    t->stack_pages = TASK_STACK_PAGES;
 
     uint64_t stack_top = vmm_hhdm_offset() + stack_phys + (TASK_STACK_PAGES * PAGE_SIZE);
     t->kernel_stack_top = stack_top; /* not consulted via TSS for a pure-kernel task, but kept consistent */
@@ -165,6 +175,7 @@ task_t *task_create_user(const char *name, process_t *proc, uint64_t entry_rip, 
         return NULL;
     }
     t->stack_phys = kstack_phys;
+    t->stack_pages = USER_KSTACK_PAGES;
 
     uint64_t kstack_top = vmm_hhdm_offset() + kstack_phys + (USER_KSTACK_PAGES * PAGE_SIZE);
     t->kernel_stack_top = kstack_top;

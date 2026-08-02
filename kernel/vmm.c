@@ -132,6 +132,44 @@ void vmm_activate(uint64_t pml4_phys) {
     asm volatile ("mov %0, %%cr3" : : "r"(pml4_phys) : "memory");
 }
 
+void vmm_destroy_address_space(uint64_t pml4_phys) {
+    uint64_t *pml4 = phys_to_virt(pml4_phys);
+
+    /* same i/j/k/l low-half walk as vmm_clone_lower_half, but freeing a
+     * page each time instead of allocating+copying one. Post-order: a
+     * table's own page can only be freed once every entry inside it has
+     * already been freed. */
+    for (int i = 0; i < 256; i++) {
+        if (!(pml4[i] & PTE_PRESENT)) continue;
+        uint64_t pdpt_phys = pml4[i] & ~0xFFFULL;
+        uint64_t *pdpt = phys_to_virt(pdpt_phys);
+
+        for (int j = 0; j < 512; j++) {
+            if (!(pdpt[j] & PTE_PRESENT)) continue;
+            uint64_t pd_phys = pdpt[j] & ~0xFFFULL;
+            uint64_t *pd = phys_to_virt(pd_phys);
+
+            for (int k = 0; k < 512; k++) {
+                if (!(pd[k] & PTE_PRESENT)) continue;
+                if (pd[k] & PTE_HUGE) continue; /* never used in userspace; skip defensively, matches clone's guard */
+                uint64_t pt_phys = pd[k] & ~0xFFFULL;
+                uint64_t *pt = phys_to_virt(pt_phys);
+
+                for (int l = 0; l < 512; l++) {
+                    if (!(pt[l] & PTE_PRESENT)) continue;
+                    pmm_free_page(pt[l] & ~0xFFFULL); /* the actual leaf: code/heap/stack page */
+                }
+                pmm_free_page(pt_phys); /* the now-empty page table itself */
+            }
+            pmm_free_page(pd_phys); /* the now-empty page directory */
+        }
+
+        pmm_free_page(pdpt_phys); /* the now-empty PDPT */
+    }
+
+    pmm_free_page(pml4_phys);
+}
+
 void vmm_clone_lower_half(uint64_t dest_pml4_phys, uint64_t src_pml4_phys) {
     uint64_t *src_pml4 = phys_to_virt(src_pml4_phys);
 
