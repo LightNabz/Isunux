@@ -9,14 +9,9 @@
 #include "kutil.h"
 #include "serial.h"
 
-#define EXEC_BUF_SIZE   65536
 #define MAX_EXEC_ARGS   8
 #define EXEC_ARG_MAXLEN 64
 
-/* Static kernel-side scratch space -- no kernel heap allocator exists
- * yet, and a one-shot exec() doesn't need one; a fixed buffer sized
- * well past any of our test binaries is simplest and correct. */
-static uint8_t exec_buf[EXEC_BUF_SIZE];
 static char exec_argv_storage[MAX_EXEC_ARGS][EXEC_ARG_MAXLEN];
 
 #define USER_STACK_TOP   0x600000ULL
@@ -57,16 +52,21 @@ int64_t do_exec(interrupt_frame_t *frame, const char *path, char **user_argv) {
         return -1;
     }
 
-    long n = node->ops->read(node, exec_buf, sizeof(exec_buf), 0);
-    if (n <= 0) {
+    uint64_t file_size = 0;
+    uint64_t exec_buf_pages = 0;
+    uint8_t *exec_buf = vfs_read_file_alloc(node, &file_size, &exec_buf_pages);
+    if (!exec_buf || file_size == 0) {
         serial_print("[exec] read failed or empty file\n");
+        if (exec_buf) vfs_read_file_free(exec_buf, exec_buf_pages);
         return -1;
     }
 
     uint64_t new_pml4 = vmm_new_address_space();
     uint64_t entry_point = 0;
     uint64_t heap_start = 0;
-    if (!elf_load(new_pml4, exec_buf, (uint64_t)n, &entry_point, &heap_start)) {
+    int ok = elf_load(new_pml4, exec_buf, file_size, &entry_point, &heap_start);
+    vfs_read_file_free(exec_buf, exec_buf_pages); /* elf_load has already copied every PT_LOAD segment into its own pages by now -- this scratch copy is done */
+    if (!ok) {
         serial_print("[exec] elf_load failed -- old process image untouched\n");
         return -1;
     }

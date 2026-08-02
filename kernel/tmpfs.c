@@ -4,8 +4,7 @@
 #include "kutil.h"
 
 #define TMPFS_MAX_NODES 128
-#define TMPFS_FILE_CAPACITY_PAGES 16 /* 64 KiB per file -- room for real compiled ELFs plus growth */
-#define TMPFS_FILE_CAPACITY (TMPFS_FILE_CAPACITY_PAGES * PAGE_SIZE)
+#define TMPFS_FILE_INITIAL_PAGES 1 /* starting size -- grows on demand now, see tmpfs_file_write */
 
 static tmpfs_node_t node_pool[TMPFS_MAX_NODES];
 static int node_count = 0;
@@ -39,16 +38,40 @@ static long tmpfs_file_read(vnode_t *node, void *buf, uint64_t count, uint64_t o
 
 static long tmpfs_file_write(vnode_t *node, const void *buf, uint64_t count, uint64_t offset) {
     tmpfs_node_t *f = (tmpfs_node_t *)node;
-    if (offset > f->capacity) return -1;
+    uint64_t needed = offset + count;
 
-    uint64_t space = f->capacity - offset;
-    uint64_t n = count < space ? count : space; /* silently truncates past 1 page -- fine for now */
+    if (needed > f->capacity) {
+        uint64_t new_cap_pages = f->capacity / PAGE_SIZE;
+        if (new_cap_pages == 0) new_cap_pages = 1;
+        while (new_cap_pages * PAGE_SIZE < needed) new_cap_pages *= 2;
+
+        uint64_t new_phys = pmm_alloc_pages(new_cap_pages);
+        if (new_phys == 0) {
+            /* genuinely out of memory -- write whatever still fits in
+             * the existing capacity instead of failing the call
+             * outright, same "do what you can" spirit as process_brk()
+             * hitting its own out-of-memory case */
+            if (offset > f->capacity) return -1;
+            uint64_t space = f->capacity - offset;
+            uint64_t n = count < space ? count : space;
+            const uint8_t *src = (const uint8_t *)buf;
+            for (uint64_t i = 0; i < n; i++) f->data[offset + i] = src[i];
+            if (offset + n > f->size) f->size = offset + n;
+            return (long)n;
+        }
+
+        uint8_t *new_data = (uint8_t *)(vmm_hhdm_offset() + new_phys);
+        k_memcpy(new_data, f->data, f->size);
+        pmm_free_pages((uint64_t)f->data - vmm_hhdm_offset(), f->capacity / PAGE_SIZE);
+        f->data = new_data;
+        f->capacity = new_cap_pages * PAGE_SIZE;
+    }
 
     const uint8_t *src = (const uint8_t *)buf;
-    for (uint64_t i = 0; i < n; i++) f->data[offset + i] = src[i];
+    for (uint64_t i = 0; i < count; i++) f->data[offset + i] = src[i];
 
-    if (offset + n > f->size) f->size = offset + n;
-    return (long)n;
+    if (offset + count > f->size) f->size = offset + count;
+    return (long)count;
 }
 
 static vnode_t *tmpfs_dir_lookup(vnode_t *dir_vnode, const char *name) {
@@ -167,9 +190,9 @@ tmpfs_node_t *tmpfs_create_file(tmpfs_node_t *dir, const char *name) {
     set_name(&f->vnode, name);
     f->vnode.parent = &dir->vnode;
 
-    uint64_t phys = pmm_alloc_pages(TMPFS_FILE_CAPACITY_PAGES);
+    uint64_t phys = pmm_alloc_pages(TMPFS_FILE_INITIAL_PAGES);
     f->data = (uint8_t *)(vmm_hhdm_offset() + phys);
-    f->capacity = TMPFS_FILE_CAPACITY;
+    f->capacity = TMPFS_FILE_INITIAL_PAGES * PAGE_SIZE;
     f->size = 0;
 
     f->next_sibling = dir->first_child;

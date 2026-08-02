@@ -145,3 +145,24 @@ typedef struct {
     uint64_t type;
     uint64_t size;
 } vfs_stat_t;
+
+/* Reads an entire file into a freshly PMM-allocated buffer -- no fixed
+ * ceiling. Doesn't trust stat() for the size (stat is NULL/optional for
+ * some node types, e.g. devfs streams): instead reads in growing
+ * chunks, doubling the buffer via a fresh pmm_alloc_pages() + copy +
+ * free of the old one whenever a chunk fills it completely, stopping
+ * the moment read() returns 0 (real EOF). Writes the file's actual byte
+ * length to *size_out and the number of pages actually allocated (which
+ * callers must pass back to vfs_read_file_free -- it can be larger than
+ * ceil(*size_out / PAGE_SIZE), since the buffer only grows in
+ * power-of-two page steps) to *pages_out. Returns NULL on failure (no
+ * read op, or out of memory partway through) -- in that case, neither
+ * size_out nor pages_out is touched. The returned pointer is a normal HHDM
+ * address, usable directly by kernel code with no separate mapping
+ * step. */
+uint8_t *vfs_read_file_alloc(struct vnode *node, uint64_t *size_out, uint64_t *pages_out);
+
+/* Frees a buffer returned by vfs_read_file_alloc -- pages must be
+ * exactly the *pages_out value that call produced, not a page count
+ * derived from *size_out. */
+void vfs_read_file_free(uint8_t *buf, uint64_t pages);

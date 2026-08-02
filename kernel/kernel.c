@@ -133,16 +133,19 @@ void _start(void) {
         hcf();
     }
 
-    static uint8_t init_elf_buf[65536];
-    long sh_size = sh_node->ops->read(sh_node, init_elf_buf, sizeof(init_elf_buf), 0);
-    if (sh_size <= 0) {
+    uint64_t sh_size = 0;
+    uint64_t sh_buf_pages = 0;
+    uint8_t *sh_buf = vfs_read_file_alloc(sh_node, &sh_size, &sh_buf_pages);
+    if (!sh_buf || sh_size == 0) {
         serial_print("!!! failed to read /bin/sh. halting.\n");
         hcf();
     }
 
     uint64_t entry_point = 0;
     uint64_t heap_start = 0;
-    if (!elf_load(proc_as, init_elf_buf, (uint64_t)sh_size, &entry_point, &heap_start)) {
+    int sh_ok = elf_load(proc_as, sh_buf, sh_size, &entry_point, &heap_start);
+    vfs_read_file_free(sh_buf, sh_buf_pages); /* elf_load already copied every PT_LOAD segment into its own pages */
+    if (!sh_ok) {
         serial_print("!!! elf_load failed. halting.\n");
         hcf();
     }

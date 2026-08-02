@@ -3,6 +3,8 @@
 #include "kutil.h"
 #include "devfs.h"
 #include "limine.h"
+#include "pmm.h"
+#include "vmm.h"
 
 static vnode_t *root_vnode;
 
@@ -193,4 +195,57 @@ void vfs_canonical_path(vnode_t *node, char *out, uint64_t out_size) {
 
     if (i < out_size) out[i] = '\0';
     else if (out_size > 0) out[out_size - 1] = '\0';
+}
+
+#define VFS_READ_INITIAL_PAGES 4 /* 16 KiB starting size -- covers every current binary in one shot, grows from there */
+
+uint8_t *vfs_read_file_alloc(vnode_t *node, uint64_t *size_out, uint64_t *pages_out) {
+    if (!node->ops || !node->ops->read) return NULL;
+
+    uint64_t cap_pages = VFS_READ_INITIAL_PAGES;
+    uint64_t phys = pmm_alloc_pages(cap_pages);
+    if (phys == 0) return NULL;
+    uint8_t *buf = (uint8_t *)(vmm_hhdm_offset() + phys);
+
+    uint64_t total = 0;
+    for (;;) {
+        uint64_t cap_bytes = cap_pages * PAGE_SIZE;
+        long n = node->ops->read(node, buf + total, cap_bytes - total, total);
+        if (n < 0) {
+            pmm_free_pages(phys, cap_pages);
+            return NULL;
+        }
+        if (n == 0) break; /* real EOF -- read() only returns 0 once offset has run past the file's actual size */
+        total += (uint64_t)n;
+
+        if (total == cap_bytes) {
+            /* buffer's completely full and the file might keep going --
+             * double it rather than guess a bigger fixed size. Same
+             * shape as pmm_alloc_pages()+copy+pmm_free_pages() used
+             * elsewhere (e.g. vmm_clone_lower_half's per-page version),
+             * just working in whole-buffer steps instead of per-page. */
+            uint64_t new_cap_pages = cap_pages * 2;
+            uint64_t new_phys = pmm_alloc_pages(new_cap_pages);
+            if (new_phys == 0) {
+                pmm_free_pages(phys, cap_pages);
+                return NULL;
+            }
+            uint8_t *new_buf = (uint8_t *)(vmm_hhdm_offset() + new_phys);
+            k_memcpy(new_buf, buf, total);
+            pmm_free_pages(phys, cap_pages);
+            phys = new_phys;
+            buf = new_buf;
+            cap_pages = new_cap_pages;
+        }
+    }
+
+    if (size_out) *size_out = total;
+    if (pages_out) *pages_out = cap_pages;
+    return buf;
+}
+
+void vfs_read_file_free(uint8_t *buf, uint64_t pages) {
+    if (!buf || pages == 0) return;
+    uint64_t phys = (uint64_t)buf - vmm_hhdm_offset();
+    pmm_free_pages(phys, pages);
 }
