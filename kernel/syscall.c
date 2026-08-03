@@ -194,6 +194,20 @@ void syscall_handler(interrupt_frame_t *frame) {
             frame->rax = (uint64_t)(int64_t)ret;
             break;
         }
+        case SYS_MMAP: {
+            uint64_t addr_hint = frame->rdi;
+            uint64_t length = frame->rsi;
+            int prot = (int)frame->rdx;
+            int flags = (int)frame->r10;
+            frame->rax = process_mmap(proc, addr_hint, length, prot, flags);
+            break;
+        }
+        case SYS_MUNMAP: {
+            uint64_t addr = frame->rdi;
+            uint64_t length = frame->rsi;
+            frame->rax = (uint64_t)(int64_t)process_munmap(proc, addr, length);
+            break;
+        }
         case SYS_KILL: {
             int target_pid = (int)frame->rdi;
             int sig = (int)frame->rsi;

@@ -19,6 +19,7 @@ typedef struct process {
     fd_entry_t fds[MAX_FDS];
     uint64_t heap_start; /* fixed once set -- just past the ELF's highest segment */
     uint64_t heap_end;   /* the current "break" -- grows via process_brk() */
+    uint64_t mmap_next;  /* next unused address in the mmap arena -- see process_mmap() */
     char cwd[VFS_MAX_PATH]; /* always absolute, no trailing slash except for "/" itself */
     int pid;
     int parent_pid;
@@ -66,6 +67,24 @@ int process_stat(process_t *p, const char *path, vfs_stat_t *out);
 int process_chdir(process_t *p, const char *path);
 
 uint64_t process_brk(process_t *p, uint64_t new_brk);
+
+/* Anonymous-only mmap: allocates `length` worth of fresh, zeroed pages
+ * (rounded up) from a dedicated arena separate from both the brk heap
+ * and the stack (see MMAP_ARENA_BASE in process.c), maps them with the
+ * requested PROT_* permissions, and returns the resulting address (or 0
+ * on failure -- out of memory, zero length, or missing MAP_ANONYMOUS).
+ * addr_hint is ignored -- no MAP_FIXED support, this always places the
+ * mapping itself. The arena only ever grows; munmap doesn't return
+ * space to it for reuse, same "grows but never reclaims its own
+ * bookkeeping" scope cut process_brk() already has. */
+uint64_t process_mmap(process_t *p, uint64_t addr_hint, uint64_t length, int prot, int flags);
+
+/* Unmaps and frees `length` worth of pages (rounded up) starting at
+ * addr. Silently skips any page in the range that isn't actually
+ * mapped, matching real munmap()'s "unmapping something already
+ * unmapped is fine" behavior. Returns 0 always in this scope-cut
+ * version (no bad-address reporting yet). */
+int process_munmap(process_t *p, uint64_t addr, uint64_t length);
 
 /* Called by sys_exit -- records the exit code and marks this process a
  * zombie, so a parent's waitpid() can observe it. The address space

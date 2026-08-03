@@ -5,10 +5,21 @@
 #include "task.h"
 #include "devfs.h"
 #include "pipe.h"
+#include "syscall.h"
 
 static process_t process_pool[MAX_PROCESSES];
 static int process_count = 0;
 static int next_pid = 1;
+
+/* Anonymous mmap()s live in their own arena, well clear of both the
+ * brk-heap (which grows up from just past the ELF's segments, starting
+ * well under 1MiB in) and the fixed 4-page user stack at USER_STACK_TOP
+ * = 0x600000 (exec.c). 1GiB leaves a huge, realistically-uncollidable
+ * gap for brk() to grow into before ever reaching here -- there's no
+ * actual collision detection between the two arenas, same "simple and
+ * correct for realistic use, not exhaustively guarded" scope as
+ * process_brk() itself. */
+#define MMAP_ARENA_BASE 0x40000000ULL
 
 process_t *process_alloc(int parent_pid) {
     for (int i = 0; i < MAX_PROCESSES; i++) {
@@ -28,6 +39,7 @@ void process_init(process_t *p, uint64_t pml4_phys, uint64_t heap_start) {
     p->pml4_phys = pml4_phys;
     p->heap_start = heap_start;
     p->heap_end = heap_start; /* empty heap until the first brk() growth */
+    p->mmap_next = MMAP_ARENA_BASE;
     p->cwd[0] = '/';
     p->cwd[1] = '\0';
 
@@ -42,6 +54,7 @@ void process_clone_into(process_t *dst, process_t *src, uint64_t new_pml4_phys) 
     dst->pml4_phys = new_pml4_phys;
     dst->heap_start = src->heap_start;
     dst->heap_end = src->heap_end;
+    dst->mmap_next = src->mmap_next;
     for (int i = 0; i < VFS_MAX_PATH; i++) dst->cwd[i] = src->cwd[i];
     for (int fd = 0; fd < MAX_FDS; fd++) {
         dst->fds[fd] = src->fds[fd]; /* struct copy -- by value, see process.h note */
@@ -131,6 +144,59 @@ uint64_t process_brk(process_t *p, uint64_t new_brk) {
 
     p->heap_end = new_brk;
     return p->heap_end;
+}
+
+uint64_t process_mmap(process_t *p, uint64_t addr_hint, uint64_t length, int prot, int flags) {
+    (void)addr_hint; /* always ignored -- no MAP_FIXED support, we always place the mapping ourselves */
+
+    if (length == 0) return 0;
+    if (!(flags & MAP_ANONYMOUS)) return 0; /* no file-backed mapping yet -- needs Tier 2's real filesystem */
+
+    uint64_t pages = (length + PAGE_SIZE - 1) / PAGE_SIZE;
+    uint64_t base = p->mmap_next;
+
+    uint64_t pte_flags = PTE_USER;
+    if (prot & PROT_WRITE) pte_flags |= PTE_WRITE; /* PROT_READ/PROT_EXEC aren't separately tracked -- same simple model process_brk() already uses, no NX bit in play anywhere in this kernel */
+
+    for (uint64_t i = 0; i < pages; i++) {
+        uint64_t phys = pmm_alloc_page();
+        if (phys == 0) {
+            /* ran out partway through -- unwind what THIS call already
+             * mapped rather than leave a half-built region sitting in
+             * the process's address space that munmap() was never told
+             * about */
+            for (uint64_t j = 0; j < i; j++) {
+                uint64_t v = base + j * PAGE_SIZE;
+                uint64_t *pte = vmm_get_pte(p->pml4_phys, v);
+                if (pte && (*pte & PTE_PRESENT)) {
+                    pmm_free_page(*pte & ~0xFFFULL);
+                    *pte = 0;
+                }
+            }
+            return 0;
+        }
+        k_memset((uint8_t *)(vmm_hhdm_offset() + phys), 0, PAGE_SIZE); /* real mmap() guarantees zeroed pages -- pmm_alloc_page() gives no such guarantee itself (freed pages aren't scrubbed, so a recycled page can carry a previous owner's leftover contents), so this has to be explicit here */
+        vmm_map_4k_in(p->pml4_phys, base + i * PAGE_SIZE, phys, pte_flags);
+    }
+
+    p->mmap_next = base + pages * PAGE_SIZE;
+    return base;
+}
+
+int process_munmap(process_t *p, uint64_t addr, uint64_t length) {
+    if (length == 0) return 0;
+
+    uint64_t pages = (length + PAGE_SIZE - 1) / PAGE_SIZE;
+    for (uint64_t i = 0; i < pages; i++) {
+        uint64_t v = addr + i * PAGE_SIZE;
+        uint64_t *pte = vmm_get_pte(p->pml4_phys, v);
+        if (!pte || !(*pte & PTE_PRESENT)) continue; /* not mapped -- matches real munmap()'s "fine, just skip it" behavior */
+
+        pmm_free_page(*pte & ~0xFFFULL);
+        *pte = 0;
+        vmm_invalidate_page(v);
+    }
+    return 0;
 }
 
 int process_open(process_t *p, const char *path) {

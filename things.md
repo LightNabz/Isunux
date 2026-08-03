@@ -28,14 +28,14 @@
 - For coreutils, I'm actually thinking to use Toybox or BusyBox? This is because the first point of Tier 3 allowed us to do it.
 - Also for how we pack them into ISO (for make iso/run/gui), I am thinking about how archiso from Arch Linux pack theirs:
 ```
-📦 Isunux.iso (The Box)
- ├── 📁 EFI/ & 📁 boot/                          <-- [BOOTLOADER Compartment]
- ├── 📁 /boot/
- │    └── 📄 kernel.elf                          <-- [KERNEL]
- └── 📁 isunux/x86_64/
-      └── 📄 airootfs.sfs (or .tar.gz, whatever) <-- [USERLAND ROOTFS]
+Isunux.iso
+ ├── EFI/ & boot/                             <-- [BOOTLOADER Compartment]
+ ├── /boot/
+ │    └── kernel.elf                          <-- [KERNEL]
+ └── isunux/x86_64/
+      └── airootfs.sfs (or .tar.gz, whatever) <-- [USERLAND ROOTFS]
 ```
-- We can also create another make command perhaps? make kernel and make rootfs?
+- We can also create another make command perhaps? "make kernel" and "make rootfs"? "make kernel" will output kernel.elf and "make rootfs" will output the rootfs.tar.gz.
 
 # Tier 4 — Polish that separates "cooked" from merely "functional"
 

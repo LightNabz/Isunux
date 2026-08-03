@@ -20,6 +20,14 @@
 #define SYS_PIPE    17
 #define SYS_KILL    18
 #define SYS_GETPID  19
+#define SYS_MMAP    20
+#define SYS_MUNMAP  21
+
+/* Mirrors kernel/syscall.h -- see there for why only these three exist. */
+#define PROT_READ  1
+#define PROT_WRITE 2
+#define PROT_EXEC  4
+#define MAP_ANONYMOUS 0x20
 
 /* Mirrors kernel/syscall.h exactly -- real Linux signal numbers, kept
  * unchanged on purpose. Only these four exist; all four have a fixed
@@ -164,4 +172,19 @@ static inline long sys_kill(int target_pid, int sig) {
 
 static inline long sys_getpid(void) {
     return syscall3(SYS_GETPID, 0, 0, 0);
+}
+
+/* addr_hint is always ignored (no MAP_FIXED support) -- this kernel
+ * always places the mapping itself, which real mmap() explicitly
+ * allows when MAP_FIXED isn't set. flags must include MAP_ANONYMOUS;
+ * anything else fails, there being no file-backed mapping support yet.
+ * Returns the mapped address, or -1 on failure (out of memory, or a
+ * flags/length that isn't supported) -- real mmap() returns
+ * (void*)-1 = MAP_FAILED for the same case, same bit pattern either way. */
+static inline long sys_mmap(unsigned long addr_hint, unsigned long length, int prot, int flags) {
+    return syscall4(SYS_MMAP, (long)addr_hint, (long)length, prot, flags);
+}
+
+static inline long sys_munmap(unsigned long addr, unsigned long length) {
+    return syscall3(SYS_MUNMAP, (long)addr, (long)length, 0);
 }

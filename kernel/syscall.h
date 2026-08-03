@@ -21,6 +21,21 @@
 #define SYS_PIPE    17
 #define SYS_KILL    18
 #define SYS_GETPID  19
+#define SYS_MMAP    20
+#define SYS_MUNMAP  21
+
+/* Real Linux prot/flags values, same "why invent our own" reasoning as
+ * the signal numbers above. Only what our anonymous-only mmap()
+ * actually uses is defined -- there's no file-backed mapping yet (needs
+ * Tier 2's real filesystem), so fd/offset aren't part of our syscall's
+ * ABI at all, and MAP_SHARED doesn't mean anything without a file or
+ * without real fork()-time mapping-list bookkeeping to share against,
+ * so it's not defined here either -- every mapping this kernel creates
+ * behaves like MAP_PRIVATE regardless of what's passed. */
+#define PROT_READ  1
+#define PROT_WRITE 2
+#define PROT_EXEC  4
+#define MAP_ANONYMOUS 0x20
 
 /* Real Linux signal numbers, kept unchanged on purpose -- no reason to
  * invent our own numbering when Tier 3 wants real Linux ABI
