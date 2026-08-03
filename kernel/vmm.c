@@ -192,14 +192,62 @@ void vmm_clone_lower_half(uint64_t dest_pml4_phys, uint64_t src_pml4_phys) {
                     uint64_t src_phys = src_pt[l] & ~0xFFFULL;
                     uint64_t flags = src_pt[l] & 0xFFFULL; /* preserve exact permission bits, e.g. read-only code stays read-only */
 
-                    uint64_t new_phys = pmm_alloc_page();
-                    k_memcpy((uint8_t *)phys_to_virt(new_phys), (uint8_t *)phys_to_virt(src_phys), PAGE_SIZE);
+                    if (flags & PTE_WRITE) {
+                        /* was genuinely writable -- both sides now share
+                         * it read-only-with-a-COW-marker instead. Update
+                         * the parent's OWN entry in place: it has to
+                         * become read-only too, since the physical page
+                         * is about to have two owners. */
+                        flags = (flags & ~PTE_WRITE) | PTE_COW;
+                        src_pt[l] = src_phys | flags | PTE_PRESENT;
+                    }
+                    /* else: permanently read-only already (e.g. a code
+                     * segment) -- share as-is, no COW marking needed,
+                     * since neither side can legitimately write to it
+                     * regardless of how many owners it has. */
+
+                    pmm_page_ref(src_phys); /* one more owner now, whichever case above */
 
                     uint64_t vaddr = ((uint64_t)i << 39) | ((uint64_t)j << 30) |
                                      ((uint64_t)k << 21) | ((uint64_t)l << 12);
-                    vmm_map_4k_in(dest_pml4_phys, vaddr, new_phys, flags);
+                    vmm_map_4k_in(dest_pml4_phys, vaddr, src_phys, flags);
                 }
             }
         }
     }
+
+    /* We just downgraded some of the PARENT's own live PTEs above (the
+     * PTE_WRITE-cleared case) -- do_fork() always runs in the parent's
+     * own context, so src_pml4_phys is the currently active CR3, and any
+     * stale writable TLB entries for those pages are still cached until
+     * something flushes them. Reloading CR3 with its own current value
+     * still forces a full TLB flush on plain x86-64 (no PCID in use
+     * here), which is the standard trick for exactly this situation. */
+    vmm_activate(src_pml4_phys);
+}
+
+uint64_t *vmm_get_pte(uint64_t pml4_phys, uint64_t vaddr) {
+    uint64_t pml4_idx = (vaddr >> 39) & 0x1FF;
+    uint64_t pdpt_idx = (vaddr >> 30) & 0x1FF;
+    uint64_t pd_idx   = (vaddr >> 21) & 0x1FF;
+    uint64_t pt_idx   = (vaddr >> 12) & 0x1FF;
+
+    uint64_t *pml4 = phys_to_virt(pml4_phys);
+    if (!(pml4[pml4_idx] & PTE_PRESENT)) return NULL;
+
+    uint64_t *pdpt = phys_to_virt(pml4[pml4_idx] & ~0xFFFULL);
+    if (!(pdpt[pdpt_idx] & PTE_PRESENT)) return NULL;
+
+    uint64_t *pd = phys_to_virt(pdpt[pdpt_idx] & ~0xFFFULL);
+    if (!(pd[pd_idx] & PTE_PRESENT)) return NULL;
+    if (pd[pd_idx] & PTE_HUGE) return NULL; /* userspace never uses 2MiB leaves */
+
+    uint64_t *pt = phys_to_virt(pd[pd_idx] & ~0xFFFULL);
+    if (!(pt[pt_idx] & PTE_PRESENT)) return NULL;
+
+    return &pt[pt_idx];
+}
+
+void vmm_invalidate_page(uint64_t vaddr) {
+    asm volatile ("invlpg (%0)" : : "r"(vaddr) : "memory");
 }

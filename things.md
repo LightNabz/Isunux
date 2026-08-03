@@ -1,8 +1,8 @@
-# Tier 0 — Correctness foundations (must fix before adding anything else)
+# Tier 0 — Correctness foundations (must fix before adding anything else) [DONE]
 
-- Free address spaces + task slots when a zombie is reaped — right now every `fork()+exit()` cycle leaks memory forever. Adding features on top of a leaking kernel just means it dies faster.
-- Remove hardcoded buffer ceilings (`init_elf_buf[65536]` and anything similar) — silent failure on oversized input isn't Unix-like, it's fragile.
-- Copy-on-write `fork()` — not strictly required for correctness, but without it every `fork()+exec()` (the standard shell pattern) wastes full-memory copies, which will make the shell feel sluggish once more than a couple programs are chained.
+- ~~Free address spaces + task slots when a zombie is reaped~~ — done. `vmm_destroy_address_space()` walks and frees a whole address space; wired into `process_waitpid()` on reap and `do_exec()` on every exec (the latter was leaking on *every* exec, not just at reap time). Task kernel stacks now get freed on slot recycle too (`task_alloc_raw()`).
+- ~~Remove hardcoded buffer ceilings~~ — done, plus the tmpfs write-side cap that was the same bug in disguise. `vfs_read_file_alloc()` replaces `exec_buf`/`init_elf_buf` with a growing PMM-backed buffer (no ceiling); `tmpfs_file_write()` now grows a file's backing storage on demand instead of silently truncating past 64KiB.
+- ~~Copy-on-write `fork()`~~ — done. Added per-page refcounting to the PMM, a `PTE_COW` bit, and an actual page-fault handler in `exceptions.c` (there wasn't one before — every fault was fatal). `vmm_clone_lower_half()` now shares pages instead of deep-copying; a write triggers copy-or-reclaim in the fault handler.
 
 # Tier 1 — The stuff that makes it a real multi-tasking system, not a demo
 

@@ -29,4 +29,14 @@ void pmm_free_page(uint64_t phys_addr);
  * at every call site. */
 void pmm_free_pages(uint64_t phys_addr, uint64_t count);
 
+/* Adds a reference to an already-allocated page instead of allocating a
+ * fresh one -- used by fork()'s copy-on-write page sharing. Every extra
+ * pmm_page_ref() needs a matching extra pmm_free_page() before the page
+ * is actually returned to the free list. */
+void pmm_page_ref(uint64_t phys_addr);
+
+/* Current owner count for a page (1 = sole owner, the normal case). 0
+ * if the page isn't currently allocated at all. */
+uint8_t pmm_page_refcount(uint64_t phys_addr);
+
 void pmm_print_stats(void);

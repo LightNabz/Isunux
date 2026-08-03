@@ -11,6 +11,16 @@
 
 static uint8_t bitmap[BITMAP_SIZE_BYTES];
 
+/* Refcount per tracked page. 1 = normal, sole-owner page (the common
+ * case, same as before this array existed). >1 = shared -- currently
+ * only reachable via fork()'s COW sharing (vmm_clone_lower_half), which
+ * bumps this instead of allocating+copying. pmm_free_page() decrements
+ * rather than unconditionally freeing, so a shared page only actually
+ * returns to the free list once every owner has dropped its reference.
+ * uint8_t is plenty of headroom -- MAX_PROCESSES is 16, so a page can
+ * never be shared by more owners than that. */
+static uint8_t refcount[MAX_PAGES];
+
 static uint64_t total_pages = 0; /* pages within the tracked range, usable or not */
 static uint64_t free_pages  = 0;
 static uint64_t used_pages  = 0;
@@ -79,6 +89,7 @@ uint64_t pmm_alloc_page(void) {
             free_pages--;
             used_pages++;
             scan_hint = idx + 1;
+            refcount[idx] = 1;
             return idx * PAGE_SIZE;
         }
     }
@@ -90,6 +101,7 @@ uint64_t pmm_alloc_page(void) {
             free_pages--;
             used_pages++;
             scan_hint = idx + 1;
+            refcount[idx] = 1;
             return idx * PAGE_SIZE;
         }
     }
@@ -107,6 +119,7 @@ uint64_t pmm_alloc_pages(uint64_t count) {
         if (j == count) {
             for (uint64_t k = 0; k < count; k++) {
                 bitmap_set(start + k);
+                refcount[start + k] = 1;
             }
             free_pages -= count;
             used_pages += count;
@@ -123,11 +136,39 @@ void pmm_free_page(uint64_t phys_addr) {
     if (idx >= total_pages) return; /* not a page we're tracking */
     if (!bitmap_test(idx)) return;  /* double free -- ignore rather than corrupt counters */
 
+    if (refcount[idx] > 1) {
+        refcount[idx]--; /* still shared -- someone else still owns a reference, page stays allocated */
+        return;
+    }
+
     bitmap_clear(idx);
+    refcount[idx] = 0;
     free_pages++;
     used_pages--;
 
     if (idx < scan_hint) scan_hint = idx; /* next alloc should reuse this */
+}
+
+/* Adds a reference to an already-allocated page instead of allocating a
+ * new one -- what fork()'s COW sharing uses to make a physical page
+ * have two (or more) owners without copying it. Does nothing to the
+ * bitmap; only pmm_free_page() sees the effect, needing one call per
+ * owner before the page is actually freed. */
+void pmm_page_ref(uint64_t phys_addr) {
+    uint64_t idx = phys_addr / PAGE_SIZE;
+    if (idx >= total_pages) return;
+    if (!bitmap_test(idx)) return; /* refusing to ref a page that isn't even allocated */
+    refcount[idx]++;
+}
+
+/* How many owners a page currently has. 1 means "sole owner" -- the
+ * page fault handler uses this to decide whether a COW write fault can
+ * just flip the page back to writable in place (nobody else references
+ * it any more) instead of actually copying. */
+uint8_t pmm_page_refcount(uint64_t phys_addr) {
+    uint64_t idx = phys_addr / PAGE_SIZE;
+    if (idx >= total_pages) return 0;
+    return refcount[idx];
 }
 
 void pmm_free_pages(uint64_t phys_addr, uint64_t count) {

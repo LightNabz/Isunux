@@ -6,6 +6,16 @@
 #define PTE_USER    (1ULL << 2) /* U/S bit: without this, ring 3 gets a page fault touching this page at all */
 #define PTE_HUGE    (1ULL << 7) /* PS bit: this entry is a 2MiB/1GiB page, not a pointer to the next level */
 
+/* Bits 9-11 of a PTE are defined by the x86-64 spec as always-available
+ * for OS use -- the CPU never reads or writes them itself. We use bit 9
+ * to mark a page that's shared read-only between two (or more) address
+ * spaces because of fork(), but was WRITABLE before the fork -- i.e. a
+ * genuine copy-on-write page, as opposed to a page that's simply,
+ * permanently read-only (like a code segment) and needs no special
+ * handling on a write fault beyond "that's a real segfault". See
+ * exception_handler's vector-14 case in exceptions.c. */
+#define PTE_COW     (1ULL << 9)
+
 /* Build our own page tables (mapping the HHDM window + the kernel image),
  * then switch CR3 to them. hhdm_offset/kernel_phys_base/kernel_virt_base
  * come straight from Limine's requests. */
@@ -38,14 +48,37 @@ void vmm_map_4k(uint64_t vaddr, uint64_t paddr, uint64_t flags);
  * kernel) can see down there. */
 uint64_t vmm_new_address_space(void);
 
-/* Clones every present mapping in the LOW half (PML4 indices 0-255 --
- * canonical-low, userspace territory) of src_pml4 into dest_pml4:
- * allocates a fresh physical page per mapping, copies its contents, and
- * maps it with the exact same permission bits the original had. Full
- * physical copy, no copy-on-write yet -- same "correct-shaped but
- * simple" scope cut as everywhere else in ISUNUX. This is fork()'s
- * entire address-space story. */
+/* Shares every present mapping in the LOW half (PML4 indices 0-255 --
+ * canonical-low, userspace territory) of src_pml4 with dest_pml4,
+ * instead of the old full-copy behavior: a writable page gets its
+ * PTE_WRITE cleared and PTE_COW set in BOTH the parent's own table and
+ * the child's new one, then pmm_page_ref()'d so the physical page now
+ * has two owners -- the actual copy is deferred to whichever side
+ * writes to it first (see exception_handler's vector-14 case). A page
+ * that's already permanently read-only (e.g. a code segment) is just
+ * shared directly with no COW marking, since neither side can
+ * legitimately write to it anyway. Reloads the parent's own CR3 once
+ * the whole walk is done, since it just downgraded some of the
+ * parent's own live PTEs and any cached writable TLB entries for them
+ * need to go. This is fork()'s entire address-space story. */
 void vmm_clone_lower_half(uint64_t dest_pml4_phys, uint64_t src_pml4_phys);
+
+/* Walks pml4_phys down to the leaf PTE for vaddr, WITHOUT creating any
+ * missing intermediate table (unlike vmm_map_4k_in, which always
+ * creates on demand) -- this is a pure lookup for the page fault
+ * handler, which needs to inspect (and sometimes modify in place) an
+ * existing mapping's flags. Returns NULL if any level of the walk is
+ * missing, or if the entry found is a 2MiB huge page (userspace never
+ * uses those, so a leaf lookup should never land on one). The returned
+ * pointer is a live pointer into the table itself -- writes through it
+ * take effect immediately, same caller-must-flush-the-TLB caveat as
+ * vmm_clone_lower_half. */
+uint64_t *vmm_get_pte(uint64_t pml4_phys, uint64_t vaddr);
+
+/* Invalidates a single page's TLB entry (INVLPG) -- narrower and
+ * cheaper than vmm_activate()'s full CR3-reload flush, for the page
+ * fault handler's single-page remap case. */
+void vmm_invalidate_page(uint64_t vaddr);
 
 /* Switch CR3 to a given address space (the kernel's own, or one from
  * vmm_new_address_space()). */
