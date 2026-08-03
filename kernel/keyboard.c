@@ -61,6 +61,12 @@ static char kbd_queue[KBD_QUEUE_SIZE];
 static volatile uint32_t kbd_head = 0;
 static volatile uint32_t kbd_tail = 0;
 
+/* Dedicated tag for task_block()/task_wake() -- its own address is the
+ * "channel", its value is never read. Kept separate from kbd_queue
+ * itself just so the wait/wake relationship reads clearly at each call
+ * site rather than reusing a buffer's address for an unrelated purpose. */
+static int kbd_wait_chan;
+
 static void kbd_queue_push(char c) {
     uint32_t next = (kbd_head + 1) % KBD_QUEUE_SIZE;
     if (next == kbd_tail) return; /* queue full -- drop it rather than corrupt anything */
@@ -89,6 +95,7 @@ static void commit_char(char c) {
         for (uint32_t i = 0; i < edit_len; i++) kbd_queue_push(edit_line[i]);
         kbd_queue_push('\n');
         edit_len = 0;
+        task_wake(&kbd_wait_chan); /* a keyboard_read() blocked below might be waiting on exactly this line */
         return;
     }
 
@@ -121,7 +128,7 @@ long keyboard_read(void *buf, uint64_t count) {
 
     char c;
     while (!kbd_queue_pop(&c)) {
-        yield(); /* block cooperatively until something's actually typed */
+        task_block(&kbd_wait_chan); /* woken the instant a full line lands, instead of polling every scheduler turn */
     }
     dst[n++] = (uint8_t)c;
 

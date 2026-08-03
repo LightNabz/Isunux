@@ -28,7 +28,7 @@ static long pipe_read(vnode_t *node, void *buf, uint64_t count, uint64_t offset)
 
     while (pipe->count == 0) {
         if (pipe->write_refcount == 0) return 0; /* no writers left, buffer empty -- EOF */
-        yield();
+        task_block(pipe); /* woken by pipe_write() adding data, or pipe_write_close() dropping to 0 writers -- the pipe_t* itself is a unique-per-pipe channel */
     }
 
     uint64_t n = 0;
@@ -37,6 +37,7 @@ static long pipe_read(vnode_t *node, void *buf, uint64_t count, uint64_t offset)
         pipe->head = (pipe->head + 1) % PIPE_BUF_SIZE;
         pipe->count--;
     }
+    task_wake(pipe); /* just freed up buffer space -- a writer blocked on "buffer full" might be waiting on exactly that */
     return (long)n;
 }
 
@@ -53,13 +54,23 @@ static long pipe_write(vnode_t *node, const void *buf, uint64_t count, uint64_t 
             return n > 0 ? (long)n : -1;
         }
         if (pipe->count == PIPE_BUF_SIZE) {
-            yield(); /* buffer full, wait for the reader to drain some */
+            /* buffer is completely full -- there's definitely unread
+             * data sitting in it right now, so wake any reader blocked
+             * on "buffer empty" BEFORE we ourselves block. Skipping this
+             * would deadlock: a reader that got here first and is
+             * already asleep waiting for data would never be woken,
+             * since we're not reaching the wake-on-completion call
+             * below until AFTER we get unblocked -- which only happens
+             * once that same reader wakes us up by draining. */
+            task_wake(pipe);
+            task_block(pipe); /* woken by pipe_read() draining space, or pipe_read_close() dropping to 0 readers */
             continue;
         }
         uint64_t tail = (pipe->head + pipe->count) % PIPE_BUF_SIZE;
         pipe->buf[tail] = src[n++];
         pipe->count++;
     }
+    task_wake(pipe); /* new data available -- a reader blocked on "buffer empty" might be waiting on exactly that */
     return (long)n;
 }
 
@@ -69,6 +80,7 @@ static void pipe_read_dup(vnode_t *node) {
 static void pipe_read_close(vnode_t *node) {
     pipe_t *pipe = (pipe_t *)node->priv;
     pipe->read_refcount--;
+    if (pipe->read_refcount == 0) task_wake(pipe); /* a writer blocked on "buffer full" needs to see this and report a broken pipe instead of sleeping forever */
     if (pipe->read_refcount == 0 && pipe->write_refcount == 0) pipe->in_use = 0;
 }
 static void pipe_write_dup(vnode_t *node) {
@@ -77,6 +89,7 @@ static void pipe_write_dup(vnode_t *node) {
 static void pipe_write_close(vnode_t *node) {
     pipe_t *pipe = (pipe_t *)node->priv;
     pipe->write_refcount--;
+    if (pipe->write_refcount == 0) task_wake(pipe); /* a reader blocked on "buffer empty" needs to see this and return EOF instead of sleeping forever */
     if (pipe->read_refcount == 0 && pipe->write_refcount == 0) pipe->in_use = 0;
 }
 

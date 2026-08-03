@@ -19,6 +19,21 @@
 #define SYS_STAT    15
 #define SYS_DUP2    16
 #define SYS_PIPE    17
+#define SYS_KILL    18
+#define SYS_GETPID  19
+
+/* Real Linux signal numbers, kept unchanged on purpose -- no reason to
+ * invent our own numbering when Tier 3 wants real Linux ABI
+ * compatibility eventually anyway, and it's free to just use the real
+ * ones now while the signal set is still this small. Only these four
+ * exist at all right now ("the four horsemen"), and all four have a
+ * hardcoded default action -- there's no sigaction()/handler mechanism
+ * yet, so a process can't catch, block, or ignore any of them (SIGCHLD
+ * aside, whose default action really is "ignore"). */
+#define SIGINT  2
+#define SIGKILL 9
+#define SIGTERM 15
+#define SIGCHLD 17
 
 /* Called from isr128 (isr.asm) with a pointer to the saved register
  * frame. Syscall number comes in via rax, arguments via rdi/rsi/rdx

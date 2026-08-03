@@ -86,6 +86,25 @@ void process_mark_zombie(process_t *p, int exit_code);
  * target_pid at all. */
 int64_t process_waitpid(process_t *self, int target_pid, int *status_out);
 
+/* Finds a process_t by pid, or NULL if no live process has that pid
+ * right now (already reaped, or never existed). Exposed mainly for
+ * sys_kill's target lookup. */
+process_t *process_find_by_pid(int pid);
+
+/* The actual "stop running, become a zombie" logic, shared by both a
+ * process exiting itself (sys_exit) and one being force-terminated by
+ * another process (sys_kill, for SIGKILL/SIGTERM/SIGINT -- none of
+ * which can be caught or ignored, there being no sigaction() yet).
+ * Closes every fd `proc` has open, marks it a zombie with exit_code
+ * (process_mark_zombie), then marks `task` terminated. `task` doesn't
+ * have to be the CALLER's own task -- sys_kill calls this against some
+ * other, not-currently-running process's task directly. That's safe
+ * specifically because this is a single-CPU cooperative scheduler: the
+ * only task ever actually executing is the one that called this
+ * function, so any OTHER task is guaranteed to be sitting idle (READY
+ * or BLOCKED) right now, not mid-instruction somewhere unsafe to touch. */
+void process_terminate(process_t *proc, struct task *task, int exit_code);
+
 /* Resolves to task_current()'s associated process -- the process the
  * syscall dispatcher should route fd/heap/fork operations against.
  * Replaces the milestone-7 placeholder single global now that tasks are

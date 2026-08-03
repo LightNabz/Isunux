@@ -12,29 +12,76 @@ static void sys_exit(int code) {
     serial_print(")\n");
 
     process_t *proc = process_current();
+    task_t *self = task_current();
     if (proc) {
-        /* real Unix closes every fd on process exit too -- without
-         * this, a child holding the write end of a pipe that just
-         * exits (rather than explicitly close()ing first, which is
-         * the completely normal case) would never trigger EOF for
-         * whoever's reading the other end, and they'd block forever. */
-        for (int fd = 0; fd < MAX_FDS; fd++) {
-            process_close(proc, fd);
-        }
-        process_mark_zombie(proc, code);
+        process_terminate(proc, self, code);
+    } else {
+        /* no process attached to this task at all (shouldn't really
+         * happen for anything that can reach a syscall, but matches the
+         * original code's behavior of still stopping the task either way) */
+        self->state = TASK_TERMINATED;
     }
 
-    /* Address space and task slot are still not freed -- a parent's
-     * waitpid() only needs the exit code and the zombie flag, not full
-     * teardown. A terminated task just permanently yields the CPU
-     * instead of ever being resumed again. Critically, this must NOT
-     * halt the whole CPU the way it used to when there was only ever
-     * one process -- now that multiple tasks coexist, that would
-     * freeze every other task in the system along with this one. */
-    task_t *self = task_current();
-    self->state = TASK_TERMINATED;
+    /* Address space and task slot are still not freed here -- a
+     * parent's waitpid() only needs the exit code and the zombie flag,
+     * not full teardown (that happens on reap, in process_waitpid). A
+     * terminated task just permanently yields the CPU instead of ever
+     * being resumed again. Critically, this must NOT halt the whole CPU
+     * the way it used to when there was only ever one process -- now
+     * that multiple tasks coexist, that would freeze every other task
+     * in the system along with this one. */
     for (;;) {
         yield();
+    }
+}
+
+/* sig is one of SIGINT/SIGKILL/SIGTERM/SIGCHLD (syscall.h). There's no
+ * sigaction() yet, so every signal's action is hardcoded: INT/TERM/KILL
+ * always terminate (nothing can catch, block, or ignore them -- an
+ * honest scope cut, not a bug), CHLD is always ignored (its real
+ * default action anyway -- the parent-wakeup half of its job is already
+ * handled unconditionally by process_mark_zombie's task_wake(), whether
+ * or not anyone ever sends the signal itself).
+ *
+ * Terminating another process synchronously, right here, instead of
+ * just setting a pending-signal flag for it to notice later, is safe
+ * specifically because there's exactly one CPU and a purely cooperative
+ * scheduler: the only task that can possibly be executing right now is
+ * this one (the caller), so `target` -- unless it's the caller itself
+ * -- is definitely sitting idle (READY or BLOCKED), never mid-execution
+ * somewhere unsafe to reach in and terminate. */
+static long sys_kill(int target_pid, int sig) {
+    process_t *self = process_current();
+    process_t *target = process_find_by_pid(target_pid);
+    if (!target) return -1; /* no such process */
+
+    switch (sig) {
+        case SIGKILL:
+        case SIGTERM:
+        case SIGINT: {
+            if (target->is_zombie) return 0; /* already dead -- delivering a fatal signal to a zombie is a harmless no-op, same as real kill() */
+
+            int encoded_exit = 128 + sig; /* real shell/wait convention: killed-by-signal N reports as exit status 128+N */
+
+            if (target == self) {
+                /* killing ourselves -- must not return to userspace at
+                 * all afterward, same requirement sys_exit has, and for
+                 * the same reason: our own task_t is about to be
+                 * TASK_TERMINATED, and letting the syscall return
+                 * normally would iretq straight back into a "dead"
+                 * task's userspace code for however long it takes the
+                 * next timer tick to notice. */
+                process_terminate(target, task_current(), encoded_exit);
+                for (;;) yield();
+            }
+
+            process_terminate(target, target->task, encoded_exit);
+            return 0;
+        }
+        case SIGCHLD:
+            return 0; /* ignored by default -- no handler mechanism exists yet for a process to react to it */
+        default:
+            return -1; /* unrecognized signal */
     }
 }
 
@@ -145,6 +192,16 @@ void syscall_handler(interrupt_frame_t *frame) {
                 fds_out[1] = fds[1];
             }
             frame->rax = (uint64_t)(int64_t)ret;
+            break;
+        }
+        case SYS_KILL: {
+            int target_pid = (int)frame->rdi;
+            int sig = (int)frame->rsi;
+            frame->rax = (uint64_t)(int64_t)sys_kill(target_pid, sig);
+            break;
+        }
+        case SYS_GETPID: {
+            frame->rax = (uint64_t)(int64_t)(proc ? proc->pid : -1);
             break;
         }
         case SYS_EXIT: {

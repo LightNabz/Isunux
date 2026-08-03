@@ -18,6 +18,18 @@
 #define SYS_STAT    15
 #define SYS_DUP2    16
 #define SYS_PIPE    17
+#define SYS_KILL    18
+#define SYS_GETPID  19
+
+/* Mirrors kernel/syscall.h exactly -- real Linux signal numbers, kept
+ * unchanged on purpose. Only these four exist; all four have a fixed
+ * default action (no sigaction()/handler support yet, so nothing can
+ * catch, block, or ignore any of them -- SIGCHLD's default action
+ * really is "ignore", not "unimplemented"). */
+#define SIGINT  2
+#define SIGKILL 9
+#define SIGTERM 15
+#define SIGCHLD 17
 
 /* Mirrors vfs_stat_t in kernel/vfs.h exactly -- this is the
  * kernel/userland ABI, kept in sync by hand like the SYS_* numbers
@@ -140,4 +152,16 @@ static inline long sys_dup2(int oldfd, int newfd) {
 /* fds_out[0] = read end, fds_out[1] = write end, matching real pipe(2) */
 static inline long sys_pipe(int fds_out[2]) {
     return syscall3(SYS_PIPE, (long)fds_out, 0, 0);
+}
+
+/* sig is one of SIGINT/SIGKILL/SIGTERM/SIGCHLD above. Returns 0 on
+ * success (including "target_pid was already dead" -- matches real
+ * kill()'s behavior of that being a harmless no-op signal delivery to
+ * a zombie), -1 if target_pid doesn't exist or sig isn't recognized. */
+static inline long sys_kill(int target_pid, int sig) {
+    return syscall3(SYS_KILL, target_pid, sig, 0);
+}
+
+static inline long sys_getpid(void) {
+    return syscall3(SYS_GETPID, 0, 0, 0);
 }

@@ -56,11 +56,24 @@ process_t *process_current(void) {
     return t ? t->proc : NULL;
 }
 
-static process_t *process_find_by_pid(int pid) {
+process_t *process_find_by_pid(int pid) {
     for (int i = 0; i < MAX_PROCESSES; i++) {
         if (process_pool[i].pid == pid) return &process_pool[i];
     }
     return NULL;
+}
+
+void process_terminate(process_t *proc, struct task *task, int exit_code) {
+    /* real Unix closes every fd on process exit too -- without this, a
+     * child holding the write end of a pipe that just exits (rather
+     * than explicitly close()ing first, which is the completely normal
+     * case) would never trigger EOF for whoever's reading the other
+     * end, and they'd block forever. */
+    for (int fd = 0; fd < MAX_FDS; fd++) {
+        process_close(proc, fd);
+    }
+    process_mark_zombie(proc, exit_code);
+    task->state = TASK_TERMINATED;
 }
 
 void process_mark_zombie(process_t *p, int exit_code) {
