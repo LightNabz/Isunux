@@ -3,6 +3,8 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "process.h"
+#include "task.h"
+#include "syscall.h"
 #include "kutil.h"
 
 static const char *exception_names[32] = {
@@ -66,6 +68,21 @@ static int try_handle_cow_fault(uint64_t cr2, uint64_t err_code) {
     return 1;
 }
 
+/* Ends the current process with exit_code and never returns -- same
+ * "must not fall back into iretq-ing into userspace" requirement
+ * sys_exit()/self-kill have, and for the same reason: our own task is
+ * about to be TASK_TERMINATED. */
+static void terminate_current_process(int exit_code) {
+    process_t *proc = process_current();
+    task_t *task = task_current();
+    if (proc && task) {
+        process_terminate(proc, task, exit_code);
+    }
+    for (;;) {
+        yield();
+    }
+}
+
 void exception_handler(interrupt_frame_t *frame) {
     if (frame->int_no == 14) {
         uint64_t cr2;
@@ -74,6 +91,23 @@ void exception_handler(interrupt_frame_t *frame) {
         if (try_handle_cow_fault(cr2, frame->err_code)) {
             return; /* isr.asm's epilogue pops registers and iretq's -- the faulting instruction just retries, now against a writable page */
         }
+    }
+
+    /* A genuine, unhandled fault that happened while running an actual
+     * ring-3 process -- as opposed to a bug in the KERNEL's own code,
+     * which still gets the full halt-and-inspect treatment below, since
+     * that's a real reason to distrust the whole machine's state --
+     * doesn't need to take the entire system down with it. Terminate
+     * just that one process with SIGSEGV and let everything else keep
+     * running, the way a real Unix kernel handles a user-mode segfault.
+     * (frame->cs & 0x3) is the CPL the fault happened at: 3 means the
+     * faulting code was running in ring 3. */
+    if ((frame->cs & 0x3) == 0x3 && process_current()) {
+        process_t *proc = process_current();
+        serial_print("\n!!! unhandled fault in userspace (pid ");
+        serial_print_dec((uint64_t)proc->pid);
+        serial_print(") -- terminating with SIGSEGV instead of halting the kernel !!!\n");
+        terminate_current_process(128 + SIGSEGV); /* never returns */
     }
 
     serial_print("\n!!! cpu exception !!!\n");

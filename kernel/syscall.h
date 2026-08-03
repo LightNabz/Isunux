@@ -46,6 +46,7 @@
  * yet, so a process can't catch, block, or ignore any of them (SIGCHLD
  * aside, whose default action really is "ignore"). */
 #define SIGINT  2
+#define SIGSEGV 11
 #define SIGKILL 9
 #define SIGTERM 15
 #define SIGCHLD 17

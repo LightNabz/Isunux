@@ -35,6 +35,7 @@
  * catch, block, or ignore any of them -- SIGCHLD's default action
  * really is "ignore", not "unimplemented"). */
 #define SIGINT  2
+#define SIGSEGV 11
 #define SIGKILL 9
 #define SIGTERM 15
 #define SIGCHLD 17

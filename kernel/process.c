@@ -139,6 +139,7 @@ uint64_t process_brk(process_t *p, uint64_t new_brk) {
     for (uint64_t addr = old_top; addr < new_top; addr += PAGE_SIZE) {
         uint64_t phys = pmm_alloc_page();
         if (phys == 0) return p->heap_end; /* out of memory -- break stays where it was */
+        k_memset((uint8_t *)(vmm_hhdm_offset() + phys), 0, PAGE_SIZE); /* pmm_alloc_page() gives no zeroing guarantee -- a recycled page can carry a previous owner's leftover contents (same reasoning as process_mmap()) */
         vmm_map_4k_in(p->pml4_phys, addr, phys, PTE_WRITE | PTE_USER);
     }
 
