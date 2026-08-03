@@ -5,6 +5,7 @@
 typedef enum {
     TASK_READY,
     TASK_RUNNING,
+    TASK_BLOCKED,   /* waiting on some event via task_block() -- not in the scheduler's ready rotation until task_wake() matches its wait_chan */
     TASK_TERMINATED,
 } task_state_t;
 
@@ -20,6 +21,7 @@ typedef struct task {
     uint64_t user_entry_rsp;
 
     task_state_t state;
+    void *wait_chan;           /* only meaningful while state == TASK_BLOCKED -- see task_block/task_wake */
     const char *name;
     process_t *proc;          /* NULL for pure-kernel tasks (e.g. 'main') */
     struct task *next;        /* circular linked list */
@@ -50,5 +52,23 @@ task_t *task_create_user(const char *name, process_t *proc, uint64_t entry_rip, 
 /* Voluntarily give up the CPU to the next READY task in the ring. Also
  * what the timer IRQ calls for preemption -- see irq.c. */
 void yield(void);
+
+/* Marks the calling task BLOCKED on an arbitrary "channel" -- any
+ * pointer the caller and whoever eventually calls task_wake() on the
+ * same value both agree on (e.g. process_waitpid() blocks on the
+ * waiting process_t* itself, woken by process_mark_zombie() looking up
+ * that same pointer). Yields immediately; does not return until some
+ * later task_wake(chan) call makes this task READY again. Same "sleep
+ * on an address" pattern as classic xv6 sleep()/wakeup(), chosen for
+ * being the simplest primitive that's still general enough to cover
+ * waitpid, SIGCHLD, and job control's stop/continue all with one
+ * mechanism. */
+void task_block(void *chan);
+
+/* Makes every task currently BLOCKED on this exact chan value READY
+ * again (there can legitimately be more than one -- e.g. two shells
+ * both waitpid()-ing the same reparented child). Safe to call even if
+ * nobody is blocked on chan; it's just a no-op scan in that case. */
+void task_wake(void *chan);
 
 task_t *task_current(void);

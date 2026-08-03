@@ -24,6 +24,18 @@
 - Pipes and redirection actually wired into the shell (`|`, `>`, `<`) — `pipe.c` exists at the kernel level; whether `bin/sh/main.c` actually exposes shell syntax for it matters a lot for feel. Sequence alongside the syscall compat item above, not after — a borrowed `grep` binary is useless in the shell without pipes to feed it.
 - Environment variables (`PATH`, `HOME`, etc.) and `execve()` actually searching `PATH` rather than requiring full paths.
 - More coreutils depth — the current set (`ls`, `cat`, `echo`, `mkdir`, `pwd`, `touch`, `rm`) covers the absolute basics; things like `cp`, `mv`, `grep`, `ln` are what make it feel like you can actually do things rather than just poke at a demo. Becomes optional (rather than the only path) once Linux static-binary compat lands, since those utilities can then be borrowed as static-linked Linux binaries instead of hand-written against `mini_libc`.
+### NOTE: 
+- For coreutils, I'm actually thinking to use Toybox or BusyBox? This is because the first point of Tier 3 allowed us to do it.
+- Also for how we pack them into ISO (for make iso/run/gui), I am thinking about how archiso from Arch Linux pack theirs:
+```
+📦 Isunux.iso (The Box)
+ ├── 📁 EFI/ & 📁 boot/                          <-- [BOOTLOADER Compartment]
+ ├── 📁 /boot/
+ │    └── 📄 kernel.elf                          <-- [KERNEL]
+ └── 📁 isunux/x86_64/
+      └── 📄 airootfs.sfs (or .tar.gz, whatever) <-- [USERLAND ROOTFS]
+```
+- We can also create another make command perhaps? make kernel and make rootfs?
 
 # Tier 4 — Polish that separates "cooked" from merely "functional"
 
@@ -34,7 +46,7 @@
 
 # Tier 5 — Legitimacy / completeness, not felt gaps
 
-- User, Group, and permission — it is not quite Unix if we don't have this feature.
+- User, Group, and permission enhancement.
 - ASLR + PIE userland — I flagged this earlier as "fine to defer" (thankfully I did not forget this). Fixed `0x400000` load address is a real security smell but changes nothing about daily usability.
 - A real time/clock subsystem — RTC read at boot, wall-clock time, `time()`/`gettimeofday()`-equivalent syscalls. Right now it's presumably PIT tick counting only; no program can know what day it is. Low effort, surprisingly high "feels like a real OS" payoff, so this might actually deserve to be higher — worth reconsidering.
 - SMP / multicore support — the scheduler is almost certainly single-core right now (`task.c` cooperative/round-robin on one CPU). This is a legitimate "big kid OS" milestone but touches nearly everything (locking, per-CPU state, IPIs) — correctly a late-stage item.

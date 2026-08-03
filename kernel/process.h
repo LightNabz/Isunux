@@ -76,12 +76,14 @@ uint64_t process_brk(process_t *p, uint64_t new_brk);
  * task_alloc_raw() next needs to recycle it -- see task.c. */
 void process_mark_zombie(process_t *p, int exit_code);
 
-/* target_pid == -1 means "any child". Blocks (cooperatively yielding)
- * until a matching child becomes a zombie, then reaps it -- tears down
- * its address space (vmm_destroy_address_space), clears its zombie
- * flag, and returns its pid, writing its exit code to *status_out if
- * non-NULL. Returns -1 immediately if the calling process has no
- * children matching target_pid at all. */
+/* target_pid == -1 means "any child". Blocks via task_block() (a real
+ * BLOCKED state, woken by process_mark_zombie() the moment a matching
+ * child exits -- not a busy-yield poll loop) until a matching child
+ * becomes a zombie, then reaps it -- tears down its address space
+ * (vmm_destroy_address_space), clears its zombie flag, and returns its
+ * pid, writing its exit code to *status_out if non-NULL. Returns -1
+ * immediately if the calling process has no children matching
+ * target_pid at all. */
 int64_t process_waitpid(process_t *self, int target_pid, int *status_out);
 
 /* Resolves to task_current()'s associated process -- the process the

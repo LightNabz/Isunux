@@ -76,6 +76,7 @@ void task_init(void) {
     main_task->proc = NULL;
     main_task->kernel_stack_top = 0; /* never consulted -- 'main' never runs ring 3 */
     main_task->state = TASK_RUNNING;
+    main_task->wait_chan = NULL;
     main_task->rsp = 0; /* unused until we first switch away from it */
     main_task->next = main_task; /* ring of one, for now */
 
@@ -114,6 +115,7 @@ task_t *task_alloc_raw(const char *name) {
     t->proc = NULL;
     t->kernel_stack_top = 0;
     t->state = TASK_READY;
+    t->wait_chan = NULL;
     t->rsp = 0;
     t->stack_phys = 0;
     t->stack_pages = 0;
@@ -203,7 +205,7 @@ static task_t *pick_next_ready(task_t *from) {
         if (t->state == TASK_READY) return t;
         t = t->next;
     }
-    return from; /* nobody else is runnable */
+    return NULL; /* nobody else is runnable -- caller decides what that means */
 }
 
 void yield(void) {
@@ -213,9 +215,23 @@ void yield(void) {
     }
 
     task_t *next = pick_next_ready(prev);
-    if (next == prev) {
-        prev->state = TASK_RUNNING;
-        return; /* nothing else to run, keep going */
+    if (!next) {
+        if (prev->state == TASK_READY) {
+            /* nobody else wants the CPU -- prev just keeps going,
+             * exactly like the old fallback-to-`from` behavior */
+            prev->state = TASK_RUNNING;
+            return;
+        }
+        /* prev itself isn't runnable either (it just called
+         * task_block() or is TASK_TERMINATED) and nothing else is
+         * ready -- every task in the system is stuck. Should be
+         * unreachable in practice ('main' never blocks or exits), but
+         * halting until the next interrupt re-enters the scheduler is
+         * far safer than the old code's behavior here, which would
+         * have resumed a blocked/terminated task as if it were RUNNING. */
+        for (;;) {
+            asm volatile ("sti; hlt");
+        }
     }
 
     next->state = TASK_RUNNING;
@@ -241,4 +257,20 @@ void yield(void) {
 
 task_t *task_current(void) {
     return current_task;
+}
+
+void task_block(void *chan) {
+    task_t *self = current_task;
+    self->wait_chan = chan;
+    self->state = TASK_BLOCKED;
+    yield(); /* doesn't return until some later task_wake(chan) call makes us READY again */
+}
+
+void task_wake(void *chan) {
+    for (int i = 0; i < task_count; i++) {
+        if (tasks[i].state == TASK_BLOCKED && tasks[i].wait_chan == chan) {
+            tasks[i].state = TASK_READY;
+            tasks[i].wait_chan = NULL;
+        }
+    }
 }

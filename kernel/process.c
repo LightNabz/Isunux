@@ -56,9 +56,23 @@ process_t *process_current(void) {
     return t ? t->proc : NULL;
 }
 
+static process_t *process_find_by_pid(int pid) {
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (process_pool[i].pid == pid) return &process_pool[i];
+    }
+    return NULL;
+}
+
 void process_mark_zombie(process_t *p, int exit_code) {
     p->exit_code = exit_code;
     p->is_zombie = 1;
+
+    /* wake a parent that's blocked in process_waitpid() below, waiting
+     * on either this specific child or "any child" -- both cases block
+     * on the same channel (the waiting process's own process_t*), so
+     * one task_wake() covers both */
+    process_t *parent = process_find_by_pid(p->parent_pid);
+    if (parent) task_wake(parent);
 }
 
 int64_t process_waitpid(process_t *self, int target_pid, int *status_out) {
@@ -85,7 +99,7 @@ for (int i = 0; i < MAX_PROCESSES; i++) {
 
         if (!found_any_child) return -1; /* no such child(ren) at all */
 
-        yield(); /* block cooperatively until a matching child exits */
+        task_block(self); /* woken by process_mark_zombie() the moment a matching child exits, instead of polling every scheduler turn */
     }
 }
 
