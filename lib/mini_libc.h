@@ -22,6 +22,7 @@
 #define SYS_GETPID  19
 #define SYS_MMAP    20
 #define SYS_MUNMAP  21
+#define SYS_SET_FOREGROUND 22
 
 /* Mirrors kernel/syscall.h -- see there for why only these three exist. */
 #define PROT_READ  1
@@ -200,4 +201,13 @@ static inline long sys_mmap(unsigned long addr_hint, unsigned long length, int p
 
 static inline long sys_munmap(unsigned long addr, unsigned long length) {
     return syscall3(SYS_MUNMAP, (long)addr, (long)length, 0);
+}
+
+/* Tells the kernel which pids should receive SIGINT/SIGTSTP on
+ * Ctrl-C/Ctrl-Z (see kernel/keyboard.c) -- this kernel's stand-in for a
+ * real controlling-terminal/process-group mechanism. count is clamped
+ * to 8 pids; pass count 0 (pids can be NULL then) to clear it, which
+ * the shell does once it's back at the prompt. */
+static inline long sys_set_foreground(const int *pids, int count) {
+    return syscall3(SYS_SET_FOREGROUND, (long)pids, count, 0);
 }

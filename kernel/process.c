@@ -64,6 +64,70 @@ void process_clone_into(process_t *dst, process_t *src, uint64_t new_pml4_phys) 
     }
 }
 
+int process_send_signal(process_t *target, int sig) {
+    if (!target) return 0;
+    task_t *me = task_current();
+
+    switch (sig) {
+        case SIGKILL:
+        case SIGTERM:
+        case SIGINT: {
+            if (target->is_zombie) return 0; /* already dead -- delivering a fatal signal to a zombie is a harmless no-op, same as real kill() */
+            process_terminate(target, target->task, ENCODE_SIGNALED(sig));
+            return (target->task == me) ? 1 : 0;
+        }
+        case SIGTSTP: {
+            if (target->is_zombie || target->is_stopped) return 0; /* already dead, or already stopped -- no-op, matches real kill() */
+            target->is_stopped = 1;
+            target->stop_signal = SIGTSTP;
+            target->stop_reported = 0;
+            process_t *parent = process_find_by_pid(target->parent_pid);
+            if (parent) task_wake(parent); /* let a foreground-waiting shell notice immediately, same wake path process_mark_zombie already uses */
+            target->task->state = TASK_STOPPED; /* safe to mutate directly even if target == me -- this only PARKS us, doesn't run anything; the actual yield happens after we return, once the caller says it's safe to */
+            return (target->task == me) ? 2 : 0;
+        }
+        case SIGCONT: {
+            if (target->is_zombie) return 0;
+            if (target->is_stopped) {
+                target->is_stopped = 0;
+                target->task->state = TASK_READY; /* directly eligible for pick_next_ready again -- no task_wake() needed, same reasoning as the SIGKILL-on-a-BLOCKED-target case */
+            }
+            return 0;
+        }
+        case SIGCHLD:
+            return 0; /* ignored by default -- no handler mechanism exists yet for a process to react to it */
+        default:
+            return -1; /* unrecognized signal */
+    }
+}
+
+#define FOREGROUND_MAX_PIDS 8 /* mirrors the shell's own MAX_STAGES */
+static int foreground_pids[FOREGROUND_MAX_PIDS];
+static int foreground_count = 0;
+
+void process_set_foreground(const int *pids, int count) {
+    if (count < 0) count = 0;
+    if (count > FOREGROUND_MAX_PIDS) count = FOREGROUND_MAX_PIDS;
+    for (int i = 0; i < count; i++) foreground_pids[i] = pids[i];
+    foreground_count = count;
+}
+
+void process_signal_foreground(int sig) {
+    int self_action = 0;
+    for (int i = 0; i < foreground_count; i++) {
+        process_t *target = process_find_by_pid(foreground_pids[i]);
+        if (!target) continue;
+        int action = process_send_signal(target, sig);
+        if (action > 0) self_action = action; /* deferred -- see process_send_signal's doc comment in process.h for why this can't just yield() immediately inside the loop */
+    }
+
+    if (self_action == 1) {
+        for (;;) yield();
+    } else if (self_action == 2) {
+        yield();
+    }
+}
+
 process_t *process_current(void) {
     task_t *t = task_current();
     return t ? t->proc : NULL;
@@ -105,27 +169,33 @@ int64_t process_waitpid(process_t *self, int target_pid, int *status_out) {
     for (;;) {
         int found_any_child = 0;
 
-for (int i = 0; i < MAX_PROCESSES; i++) {
-        process_t *p = &process_pool[i];
-        if (p->pid == 0) continue;
-        if (p->parent_pid != self->pid) continue;
-        if (target_pid != -1 && p->pid != target_pid) continue;
+        for (int i = 0; i < MAX_PROCESSES; i++) {
+            process_t *p = &process_pool[i];
+            if (p->pid == 0) continue;
+            if (p->parent_pid != self->pid) continue;
+            if (target_pid != -1 && p->pid != target_pid) continue;
 
-        found_any_child = 1;
+            found_any_child = 1;
 
-        if (p->is_zombie) {
-            int reaped_pid = p->pid;
-            if (status_out) *status_out = p->exit_code;
-            vmm_destroy_address_space(p->pml4_phys); /* last chance -- p->pml4_phys is gone after the memset below */
-            k_memset(p, 0, sizeof(*p));
-            process_count--;
-            return reaped_pid;
+            if (p->is_zombie) {
+                int reaped_pid = p->pid;
+                if (status_out) *status_out = p->exit_code;
+                vmm_destroy_address_space(p->pml4_phys); /* last chance -- p->pml4_phys is gone after the memset below */
+                k_memset(p, 0, sizeof(*p));
+                process_count--;
+                return reaped_pid;
+            }
+
+            if (p->is_stopped && !p->stop_reported) {
+                p->stop_reported = 1; /* one-shot -- a second waitpid() call shouldn't report this exact same stop again */
+                if (status_out) *status_out = ENCODE_STOPPED(p->stop_signal);
+                return p->pid; /* NOT reaped -- still alive, just suspended */
             }
         }
 
         if (!found_any_child) return -1; /* no such child(ren) at all */
 
-        task_block(self); /* woken by process_mark_zombie() the moment a matching child exits, instead of polling every scheduler turn */
+        task_block(self); /* woken the moment a matching child's state changes -- exit (process_mark_zombie) or stop (process_send_signal) both call task_wake(parent) */
     }
 }
 

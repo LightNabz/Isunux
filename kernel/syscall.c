@@ -35,54 +35,21 @@ static void sys_exit(int code) {
     }
 }
 
-/* sig is one of SIGINT/SIGKILL/SIGTERM/SIGCHLD (syscall.h). There's no
- * sigaction() yet, so every signal's action is hardcoded: INT/TERM/KILL
- * always terminate (nothing can catch, block, or ignore them -- an
- * honest scope cut, not a bug), CHLD is always ignored (its real
- * default action anyway -- the parent-wakeup half of its job is already
- * handled unconditionally by process_mark_zombie's task_wake(), whether
- * or not anyone ever sends the signal itself).
- *
- * Terminating another process synchronously, right here, instead of
- * just setting a pending-signal flag for it to notice later, is safe
- * specifically because there's exactly one CPU and a purely cooperative
- * scheduler: the only task that can possibly be executing right now is
- * this one (the caller), so `target` -- unless it's the caller itself
- * -- is definitely sitting idle (READY or BLOCKED), never mid-execution
- * somewhere unsafe to reach in and terminate. */
+/* sig is one of SIGINT/SIGKILL/SIGTERM/SIGCHLD/SIGTSTP/SIGCONT
+ * (syscall.h). There's no sigaction() yet, so every signal's action is
+ * hardcoded -- see process_send_signal's doc comment in process.h for
+ * exactly what each one does and why terminating/stopping another
+ * process synchronously, right here, is safe on this single-CPU
+ * cooperative scheduler. */
 static long sys_kill(int target_pid, int sig) {
-    process_t *self = process_current();
     process_t *target = process_find_by_pid(target_pid);
     if (!target) return -1; /* no such process */
 
-    switch (sig) {
-        case SIGKILL:
-        case SIGTERM:
-        case SIGINT: {
-            if (target->is_zombie) return 0; /* already dead -- delivering a fatal signal to a zombie is a harmless no-op, same as real kill() */
-
-            int encoded_exit = ENCODE_SIGNALED(sig);
-
-            if (target == self) {
-                /* killing ourselves -- must not return to userspace at
-                 * all afterward, same requirement sys_exit has, and for
-                 * the same reason: our own task_t is about to be
-                 * TASK_TERMINATED, and letting the syscall return
-                 * normally would iretq straight back into a "dead"
-                 * task's userspace code for however long it takes the
-                 * next timer tick to notice. */
-                process_terminate(target, task_current(), encoded_exit);
-                for (;;) yield();
-            }
-
-            process_terminate(target, target->task, encoded_exit);
-            return 0;
-        }
-        case SIGCHLD:
-            return 0; /* ignored by default -- no handler mechanism exists yet for a process to react to it */
-        default:
-            return -1; /* unrecognized signal */
-    }
+    int action = process_send_signal(target, sig);
+    if (action < 0) return -1; /* unrecognized signal */
+    if (action == 1) { for (;;) yield(); } /* killed ourselves -- never return to userspace, same requirement sys_exit() has */
+    if (action == 2) { yield(); } /* stopped ourselves -- parks here; resumes right after this once some later SIGCONT sets us back to TASK_READY */
+    return 0;
 }
 
 void syscall_handler(interrupt_frame_t *frame) {
@@ -206,6 +173,11 @@ void syscall_handler(interrupt_frame_t *frame) {
             uint64_t addr = frame->rdi;
             uint64_t length = frame->rsi;
             frame->rax = (uint64_t)(int64_t)process_munmap(proc, addr, length);
+            break;
+        }
+        case SYS_SET_FOREGROUND: {
+            process_set_foreground((const int *)frame->rdi, (int)frame->rsi);
+            frame->rax = 0;
             break;
         }
         case SYS_KILL: {

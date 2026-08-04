@@ -1,6 +1,8 @@
 #include "keyboard.h"
 #include "term.h"
 #include "task.h"
+#include "process.h"
+#include "syscall.h"
 
 /* Set 1 scancodes, US QWERTY. Unmapped entries (0) are keys we don't
  * translate at all -- Ctrl, Alt, F-keys, arrows, etc. Indexed with
@@ -46,7 +48,9 @@ static const char upper_table[128] = {
 
 #define SC_LSHIFT 0x2A
 #define SC_RSHIFT 0x36
+#define SC_LCTRL  0x1D /* left Ctrl only -- right Ctrl arrives as an 0xE0-prefixed extended scancode, and this driver doesn't handle extended prefixes at all, same scope cut as the arrow keys/F-keys/etc. already being unmapped */
 static int shift_held = 0;
+static int ctrl_held = 0;
 
 /* the line currently being typed -- edited locally (backspace works
  * here) before ever becoming visible to a reader */
@@ -113,11 +117,37 @@ void keyboard_handle_scancode(uint8_t sc) {
         shift_held = !released;
         return;
     }
+    if (code == SC_LCTRL) {
+        ctrl_held = !released;
+        return;
+    }
 
     if (released) return; /* only make codes matter for everything else */
 
+    if (ctrl_held) {
+        /* job control's whole reason for existing: these need to
+         * interrupt whatever's running RIGHT NOW, mid-line, not wait for
+         * Enter and go through the normal buffered-line path the way
+         * ordinary typing does. process_signal_foreground() (process.c)
+         * is safe to call from here, IRQ context -- it may yield()
+         * internally, and a yield() from inside an interrupt handler is
+         * already an established pattern in this kernel (irq.c's timer
+         * preemption does exactly this). */
+        if (code == 0x2E) { /* 'C' key position */
+            term_print("^C\n");
+            process_signal_foreground(SIGINT);
+            return;
+        }
+        if (code == 0x2C) { /* 'Z' key position */
+            term_print("^Z\n");
+            process_signal_foreground(SIGTSTP);
+            return;
+        }
+        return; /* other Ctrl+key combos: not handled, silently ignored, same as any other unmapped key */
+    }
+
     char c = shift_held ? upper_table[code] : lower_table[code];
-    if (c == 0) return; /* unmapped key (ctrl, alt, F-keys, arrows, ...) */
+    if (c == 0) return; /* unmapped key (alt, F-keys, arrows, ...) */
 
     commit_char(c);
 }

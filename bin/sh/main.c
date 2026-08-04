@@ -89,6 +89,66 @@ static void do_assignment(const char *word) {
     env_set(name, word[i] == '=' ? &word[i + 1] : "");
 }
 
+/* ==================== job control ====================
+ * Real job control tracks whole process GROUPS via a controlling
+ * terminal (tcsetpgrp, SIGTTIN/SIGTTOU for background processes that
+ * try to touch the terminal, etc.) -- none of that exists here. This is
+ * a deliberately thin stand-in: the kernel's foreground pid SET
+ * (sys_set_foreground, cleared back to empty once we're at the prompt)
+ * is what Ctrl-C/Ctrl-Z actually target, and this table is purely the
+ * SHELL's own memory of what it's told the kernel about, for jobs/fg/bg
+ * to display and act on. The kernel doesn't know what a "job" is at
+ * all -- only pids. */
+#define MAX_JOBS 16
+typedef struct {
+    int used;
+    int job_id;
+    int pids[MAX_STAGES];
+    int npids;
+    int stopped; /* 1 = currently suspended (SIGTSTP), 0 = running (foreground wait returned, or backgrounded with '&') */
+    char cmdline[MAX_LINE];
+} job_t;
+
+static job_t jobs[MAX_JOBS];
+static int next_job_id = 1;
+
+static int add_job(const int *pids, int npids, const char *cmdline, int stopped) {
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (jobs[i].used) continue;
+        jobs[i].used = 1;
+        jobs[i].job_id = next_job_id++;
+        jobs[i].npids = npids;
+        for (int j = 0; j < npids; j++) jobs[i].pids[j] = pids[j];
+        jobs[i].stopped = stopped;
+        copy_bounded(jobs[i].cmdline, sizeof(jobs[i].cmdline), cmdline);
+        return jobs[i].job_id;
+    }
+    return -1; /* table full -- the process itself still runs fine, we just lose the ability to fg/bg/list it by name */
+}
+
+static job_t *find_job_by_id(int id) {
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (jobs[i].used && jobs[i].job_id == id) return &jobs[i];
+    }
+    return NULL;
+}
+
+/* what bare "fg"/"bg" with no argument targets -- the most recently
+ * added job, matching real shells' "current job" convention */
+static job_t *find_most_recent_job(void) {
+    job_t *best = NULL;
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (jobs[i].used && (!best || jobs[i].job_id > best->job_id)) best = &jobs[i];
+    }
+    return best;
+}
+
+/* accepts "%3", "3", or falls back to the most recent job if arg is NULL */
+static job_t *resolve_job_arg(const char *arg) {
+    if (!arg) return find_most_recent_job();
+    return find_job_by_id(str_to_int(arg[0] == '%' ? arg + 1 : arg));
+}
+
 /* ==================== tokenizer ====================
  * Handles single/double quotes (spaces inside them don't split a
  * token; single quotes suppress $VAR expansion, double quotes still
@@ -99,7 +159,7 @@ static void do_assignment(const char *word) {
  * safely outlive the original input line (expansion can make a word
  * longer than what was originally typed, so tokens can't just be
  * pointers back into `line` the way a plain whitespace-split could). */
-typedef enum { TOK_WORD, TOK_PIPE, TOK_REDIR_OUT, TOK_REDIR_IN } tok_type_t;
+typedef enum { TOK_WORD, TOK_PIPE, TOK_REDIR_OUT, TOK_REDIR_IN, TOK_AMP } tok_type_t;
 typedef struct { tok_type_t type; char *text; } token_t;
 
 static char arena[TOKEN_ARENA_SIZE];
@@ -115,8 +175,8 @@ static int tokenize(const char *line, token_t *toks, int max_toks) {
         if (!*p) break;
         if (n >= max_toks) break;
 
-        if (*p == '|' || *p == '>' || *p == '<') {
-            toks[n].type = (*p == '|') ? TOK_PIPE : (*p == '>') ? TOK_REDIR_OUT : TOK_REDIR_IN;
+        if (*p == '|' || *p == '>' || *p == '<' || *p == '&') {
+            toks[n].type = (*p == '|') ? TOK_PIPE : (*p == '>') ? TOK_REDIR_OUT : (*p == '<') ? TOK_REDIR_IN : TOK_AMP;
             toks[n].text = NULL;
             p++;
             n++;
@@ -127,7 +187,7 @@ static int tokenize(const char *line, token_t *toks, int max_toks) {
         int in_single = 0, in_double = 0;
 
         while (*p) {
-            if (!in_single && !in_double && (*p == ' ' || *p == '\t' || *p == '|' || *p == '>' || *p == '<')) break;
+            if (!in_single && !in_double && (*p == ' ' || *p == '\t' || *p == '|' || *p == '>' || *p == '<' || *p == '&')) break;
 
             if (!in_double && *p == '\'') { in_single = !in_single; p++; continue; }
             if (!in_single && *p == '"') { in_double = !in_double; p++; continue; }
@@ -322,11 +382,58 @@ static int run_builtin(stage_t *s) {
         return 1;
     }
 
+    if (strcmp(s->argv[0], "jobs") == 0) {
+        for (int i = 0; i < MAX_JOBS; i++) {
+            if (!jobs[i].used) continue;
+            printf("[%d]%s %s\n", jobs[i].job_id, jobs[i].stopped ? "  Stopped" : "  Running", jobs[i].cmdline);
+        }
+        return 1;
+    }
+
+    if (strcmp(s->argv[0], "fg") == 0) {
+        job_t *j = resolve_job_arg(s->argc > 1 ? s->argv[1] : NULL);
+        if (!j) { printf("fg: no such job\n"); return 1; }
+
+        printf("%s\n", j->cmdline);
+        if (j->stopped) {
+            for (int k = 0; k < j->npids; k++) sys_kill(j->pids[k], SIGCONT);
+            j->stopped = 0;
+        }
+
+        sys_set_foreground(j->pids, j->npids);
+        int any_stopped = 0;
+        for (int k = 0; k < j->npids; k++) {
+            int status = 0;
+            sys_waitpid(j->pids[k], &status);
+            if (WIFSTOPPED(status)) any_stopped = 1;
+        }
+        sys_set_foreground(0, 0); /* back at the prompt -- clear it */
+
+        if (any_stopped) {
+            j->stopped = 1; /* re-stopped (another Ctrl-Z) -- keep the same job entry */
+            printf("[%d]+  Stopped %s\n", j->job_id, j->cmdline);
+        } else {
+            j->used = 0; /* ran to completion -- done with this job */
+        }
+        return 1;
+    }
+
+    if (strcmp(s->argv[0], "bg") == 0) {
+        job_t *j = resolve_job_arg(s->argc > 1 ? s->argv[1] : NULL);
+        if (!j) { printf("bg: no such job\n"); return 1; }
+        if (!j->stopped) { printf("bg: job already running\n"); return 1; }
+
+        for (int k = 0; k < j->npids; k++) sys_kill(j->pids[k], SIGCONT);
+        j->stopped = 0;
+        printf("[%d]  %s &\n", j->job_id, j->cmdline);
+        return 1;
+    }
+
     return 0; /* not a builtin */
 }
 
 /* ==================== pipeline execution ==================== */
-static void run_pipeline(stage_t *stages, int nstages) {
+static void run_pipeline(stage_t *stages, int nstages, int background, const char *cmdline) {
     if (nstages == 1 && run_builtin(&stages[0])) return;
     if (nstages == 1 && stages[0].argc == 0) return;
 
@@ -385,11 +492,34 @@ static void run_pipeline(stage_t *stages, int nstages) {
         sys_close(pipe_fds[j][1]);
     }
 
-    for (int i = 0; i < nstages; i++) {
-        if (child_pids[i] > 0) {
-            int status = 0;
-            sys_waitpid(child_pids[i], &status);
+    if (background) {
+        int job_id = add_job(child_pids, nstages, cmdline, 0);
+        printf("[%d]", job_id);
+        for (int i = 0; i < nstages; i++) {
+            if (child_pids[i] > 0) printf(" %d", child_pids[i]);
         }
+        printf("\n");
+        return;
+    }
+
+    /* foreground -- tell the kernel these pids should receive
+     * Ctrl-C/Ctrl-Z, since it has no other notion of "which process is
+     * in front" (see sys_set_foreground's doc comment in mini_libc.h) */
+    sys_set_foreground(child_pids, nstages);
+
+    int any_stopped = 0;
+    for (int i = 0; i < nstages; i++) {
+        if (child_pids[i] <= 0) continue;
+        int status = 0;
+        sys_waitpid(child_pids[i], &status);
+        if (WIFSTOPPED(status)) any_stopped = 1; /* not reaped -- still alive, just suspended. Every OTHER stage in this same pipeline was in the foreground set too, so a Ctrl-Z here stopped the whole pipeline together, not just this one stage -- none of them are stuck blocked on a now-frozen upstream/downstream neighbor. */
+    }
+
+    sys_set_foreground(0, 0); /* back at the prompt -- clear it so a stray Ctrl-C/Ctrl-Z has nothing to hit (notably not even the shell's own pid -- see sys_set_foreground's doc comment for why) */
+
+    if (any_stopped) {
+        int job_id = add_job(child_pids, nstages, cmdline, 1);
+        printf("[%d]+  Stopped %s\n", job_id, cmdline);
     }
 }
 
@@ -415,6 +545,13 @@ int main(int argc, char **argv) {
         int ntoks = tokenize(line, toks, MAX_TOKENS);
         if (ntoks == 0) continue; /* just Enter on an empty line */
 
+        int background = 0;
+        if (toks[ntoks - 1].type == TOK_AMP) {
+            background = 1;
+            ntoks--;
+            if (ntoks == 0) continue; /* a bare "&" with nothing before it -- nothing to run */
+        }
+
         if (ntoks == 1 && toks[0].type == TOK_WORD && is_assignment(toks[0].text)) {
             do_assignment(toks[0].text);
             continue;
@@ -424,7 +561,7 @@ int main(int argc, char **argv) {
         int nstages = parse_pipeline(toks, ntoks, stages, MAX_STAGES);
         if (nstages <= 0) continue;
 
-        run_pipeline(stages, nstages);
+        run_pipeline(stages, nstages, background, line);
     }
 
     return 0;

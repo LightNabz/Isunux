@@ -25,6 +25,9 @@ typedef struct process {
     int parent_pid;
     int exit_code;
     int is_zombie; /* set by sys_exit, cleared once a parent reaps it via waitpid */
+    int is_stopped;    /* job control (SIGTSTP) -- true while actually suspended; the process is still alive, NOT a zombie */
+    int stop_signal;   /* which signal caused the current stop -- always SIGTSTP right now, but keeping it as a field rather than assuming keeps process_waitpid's reporting generic */
+    int stop_reported; /* has some waiter already been told about THIS stop instance -- cleared again on the next stop, same one-shot-per-event idea process_mark_zombie's is_zombie already has for exits */
     struct task *task;   /* the scheduler's thread of execution for this process */
 } process_t;
 
@@ -96,13 +99,22 @@ int process_munmap(process_t *p, uint64_t addr, uint64_t length);
 void process_mark_zombie(process_t *p, int exit_code);
 
 /* target_pid == -1 means "any child". Blocks via task_block() (a real
- * BLOCKED state, woken by process_mark_zombie() the moment a matching
- * child exits -- not a busy-yield poll loop) until a matching child
- * becomes a zombie, then reaps it -- tears down its address space
- * (vmm_destroy_address_space), clears its zombie flag, and returns its
- * pid, writing its exit code to *status_out if non-NULL. Returns -1
- * immediately if the calling process has no children matching
- * target_pid at all. */
+ * BLOCKED state, woken the moment a matching child's state changes --
+ * not a busy-yield poll loop) until a matching child EITHER becomes a
+ * zombie OR is newly stopped (SIGTSTP, job control), then reports it:
+ *   - zombie: reaps it -- tears down its address space
+ *     (vmm_destroy_address_space), clears its zombie flag, and returns
+ *     its pid, with *status_out ENCODE_EXITED/ENCODE_SIGNALED-encoded.
+ *   - newly stopped: does NOT reap it (it's still alive!) -- just
+ *     returns its pid with *status_out ENCODE_STOPPED-encoded, and
+ *     marks the stop as reported so a second waitpid() call doesn't
+ *     report the exact same stop again (real waitpid() only reports
+ *     each stop/continue event once too). A later re-stop (another
+ *     SIGTSTP after a SIGCONT) is a new, separately-reportable event.
+ * This kernel doesn't have a WUNTRACED-style opt-in -- stop-reporting
+ * always happens, unconditionally, a reasonable simplification for a
+ * single-shell system. Returns -1 immediately if the calling process
+ * has no children matching target_pid at all. */
 int64_t process_waitpid(process_t *self, int target_pid, int *status_out);
 
 /* Finds a process_t by pid, or NULL if no live process has that pid
@@ -129,3 +141,49 @@ void process_terminate(process_t *proc, struct task *task, int exit_code);
  * Replaces the milestone-7 placeholder single global now that tasks are
  * properly scheduler-integrated. */
 process_t *process_current(void);
+
+/* The actual per-signal delivery logic -- SIGKILL/SIGTERM/SIGINT
+ * terminate `target` (via process_terminate, ENCODE_SIGNALED-encoded);
+ * SIGTSTP suspends it (job control -- sets is_stopped, wakes a
+ * waitpid()-ing parent, moves its task to TASK_STOPPED); SIGCONT
+ * resumes a stopped one; SIGCHLD is a no-op (its real default action --
+ * the parent-wakeup half of its job already happens unconditionally via
+ * process_mark_zombie's task_wake(), whether or not this signal itself
+ * is ever sent). Shared by sys_kill (one target, from a syscall) and
+ * process_signal_foreground (below, possibly several targets in one
+ * shot, from a keyboard IRQ).
+ *
+ * Deliberately does NOT yield() on the caller's behalf if `target`
+ * turns out to be the calling task itself -- instead returns 0 (no
+ * special action needed), 1 (target was self and is now
+ * TASK_TERMINATED -- caller must loop yield() forever, never returning
+ * to userspace), or 2 (target was self and is now TASK_STOPPED --
+ * caller must yield() exactly once). This split matters for
+ * process_signal_foreground: it may need to signal several
+ * targets in one keyboard event, and one of them happening to be the
+ * currently-running task can't be allowed to yield() away mid-loop
+ * before the REST of the foreground set has been signaled too. Returns
+ * -1 for an unrecognized signal number. */
+int process_send_signal(process_t *target, int sig);
+
+/* Records which pids should receive SIGINT/SIGTSTP when Ctrl-C/Ctrl-Z
+ * is pressed (see keyboard.c) -- this kernel's stand-in for a real
+ * process-group-based controlling terminal, which doesn't exist. count
+ * is clamped to a small fixed bound (mirrors the shell's own
+ * MAX_STAGES); pids beyond that are silently dropped, same "bounded and
+ * simple over exhaustively general" scope cut as everywhere else here.
+ * The shell calls this with its current pipeline's pids before
+ * waiting on it in the foreground, and with count 0 once it's back at
+ * the prompt (so a stray Ctrl-C there has nothing to hit -- notably,
+ * NOT the shell's own pid, since the shell has no way to override
+ * SIGINT's default terminate action without real sigaction() support). */
+void process_set_foreground(const int *pids, int count);
+
+/* Delivers sig (SIGINT or SIGTSTP, in practice) to every pid currently
+ * in the foreground set via process_send_signal, then yields on the
+ * calling task's behalf if (and only after) that turned out to be
+ * necessary -- see process_send_signal's doc comment for why the
+ * deferral matters here specifically. Safe to call from IRQ context: a
+ * yield() from inside an interrupt handler is already an established
+ * pattern in this kernel (irq.c's timer preemption does exactly this). */
+void process_signal_foreground(int sig);

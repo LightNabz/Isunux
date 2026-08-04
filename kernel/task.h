@@ -6,6 +6,7 @@ typedef enum {
     TASK_READY,
     TASK_RUNNING,
     TASK_BLOCKED,   /* waiting on some event via task_block() -- not in the scheduler's ready rotation until task_wake() matches its wait_chan */
+    TASK_STOPPED,   /* suspended by SIGTSTP (job control) -- not in the scheduler's ready rotation until a SIGCONT sets it back to TASK_READY directly */
     TASK_TERMINATED,
 } task_state_t;
 
