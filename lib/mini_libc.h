@@ -39,6 +39,18 @@
 #define SIGKILL 9
 #define SIGTERM 15
 #define SIGCHLD 17
+#define SIGTSTP 20
+#define SIGCONT 18
+
+/* Mirrors kernel/syscall.h's ENCODE_* macros -- real POSIX wait-status
+ * bit layout. These are the decode side: what a caller of sys_waitpid()
+ * actually inspects a status value with. */
+#define WIFEXITED(status)    (((status) & 0x7f) == 0)
+#define WEXITSTATUS(status)  (((status) >> 8) & 0xff)
+#define WTERMSIG(status)     ((status) & 0x7f)
+#define WIFSIGNALED(status)  (((status) & 0x7f) != 0 && ((status) & 0x7f) != 0x7f)
+#define WIFSTOPPED(status)   (((status) & 0xff) == 0x7f)
+#define WSTOPSIG(status)     (((status) >> 8) & 0xff)
 
 /* Mirrors vfs_stat_t in kernel/vfs.h exactly -- this is the
  * kernel/userland ABI, kept in sync by hand like the SYS_* numbers

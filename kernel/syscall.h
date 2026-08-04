@@ -50,6 +50,26 @@
 #define SIGKILL 9
 #define SIGTERM 15
 #define SIGCHLD 17
+#define SIGTSTP 20
+#define SIGCONT 18
+
+/* Real POSIX wait-status bit layout (glibc's bits/waitstatus.h), used
+ * exactly as-is -- no reason to invent our own encoding when this is
+ * exactly the kind of thing Tier 3's Linux ABI compat goal needs
+ * unchanged anyway, same reasoning as the signal numbers above.
+ *   exited normally, code C:  (C & 0xff) << 8            (low byte 0)
+ *   killed by signal S:        S & 0x7f                    (high byte 0)
+ *   stopped by signal S:      ((S & 0xff) << 8) | 0x7f
+ * These three encodings can never collide: an exited status always has
+ * a zero low byte, a signaled status always has a nonzero low byte that
+ * isn't 0x7f, and a stopped status's low byte is always exactly 0x7f.
+ * The kernel only ever WRITES these (process_terminate's callers below,
+ * and process_waitpid's stop-report path); userland's matching
+ * WIFEXITED/WEXITSTATUS/etc. decode macros live in mini_libc.h, the
+ * only place that ever reads them back apart. */
+#define ENCODE_EXITED(code)    (((code) & 0xff) << 8)
+#define ENCODE_SIGNALED(sig)   ((sig) & 0x7f)
+#define ENCODE_STOPPED(sig)    ((((sig) & 0xff) << 8) | 0x7f)
 
 /* Called from isr128 (isr.asm) with a pointer to the saved register
  * frame. Syscall number comes in via rax, arguments via rdi/rsi/rdx

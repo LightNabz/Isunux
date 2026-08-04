@@ -28,9 +28,10 @@ int main(void) {
     int status = 0;
     sys_waitpid((int)pid, &status);
 
-    printf("child status: %d (expected %d)\n", status, 128 + SIGSEGV);
+    printf("child status: %d, WIFSIGNALED=%d, WTERMSIG=%d (expected signaled, sig %d)\n",
+           status, WIFSIGNALED(status), WTERMSIG(status), SIGSEGV);
 
-    if (status == 128 + SIGSEGV) {
+    if (WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV) {
         printf("PASS: userspace fault terminated only the child (SIGSEGV), kernel kept running\n");
         return 0;
     }

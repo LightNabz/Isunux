@@ -14,7 +14,7 @@ static void sys_exit(int code) {
     process_t *proc = process_current();
     task_t *self = task_current();
     if (proc) {
-        process_terminate(proc, self, code);
+        process_terminate(proc, self, ENCODE_EXITED(code));
     } else {
         /* no process attached to this task at all (shouldn't really
          * happen for anything that can reach a syscall, but matches the
@@ -61,7 +61,7 @@ static long sys_kill(int target_pid, int sig) {
         case SIGINT: {
             if (target->is_zombie) return 0; /* already dead -- delivering a fatal signal to a zombie is a harmless no-op, same as real kill() */
 
-            int encoded_exit = 128 + sig; /* real shell/wait convention: killed-by-signal N reports as exit status 128+N */
+            int encoded_exit = ENCODE_SIGNALED(sig);
 
             if (target == self) {
                 /* killing ourselves -- must not return to userspace at

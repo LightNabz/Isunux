@@ -131,7 +131,7 @@ int main(int argc, char **argv) {
         printf("[parent] forked pid %d, calling execve on it, now waiting...\n", (int)pid2);
         int status = 0;
         long reaped = sys_waitpid((int)pid2, &status);
-        printf("[parent] reaped pid %d, exit code %d\n", (int)reaped, status);
+        printf("[parent] reaped pid %d, exit code %d\n", (int)reaped, WEXITSTATUS(status));
     } else {
         printf("fork failed!\n");
     }

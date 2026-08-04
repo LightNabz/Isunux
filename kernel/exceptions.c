@@ -107,7 +107,7 @@ void exception_handler(interrupt_frame_t *frame) {
         serial_print("\n!!! unhandled fault in userspace (pid ");
         serial_print_dec((uint64_t)proc->pid);
         serial_print(") -- terminating with SIGSEGV instead of halting the kernel !!!\n");
-        terminate_current_process(128 + SIGSEGV); /* never returns */
+        terminate_current_process(ENCODE_SIGNALED(SIGSEGV)); /* never returns */
     }
 
     serial_print("\n!!! cpu exception !!!\n");

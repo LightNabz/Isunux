@@ -15,7 +15,7 @@
  * more machinery than this scope-limited signal implementation is
  * worth building a test harness for right now. */
 
-static int run_case(int case_id, const char *label, int expected_status) {
+static int run_case(int case_id, const char *label, int expected_sig) {
     int status = -999;
     int pid = -1;
 
@@ -50,18 +50,18 @@ static int run_case(int case_id, const char *label, int expected_status) {
         sys_waitpid(pid, &status);
     }
 
-    int pass = (status == expected_status);
-    printf("case %s: pid %d, status %d (expected %d) -- %s\n",
-           label, pid, status, expected_status, pass ? "PASS" : "FAIL");
+    int pass = WIFSIGNALED(status) && WTERMSIG(status) == expected_sig;
+    printf("case %s: pid %d, status %d, WIFSIGNALED=%d, WTERMSIG=%d (expected sig %d) -- %s\n",
+           label, pid, status, WIFSIGNALED(status), WTERMSIG(status), expected_sig, pass ? "PASS" : "FAIL");
     return pass;
 }
 
 int main(void) {
     int all_pass = 1;
 
-    all_pass &= run_case(0, "A", 128 + SIGTERM); /* blocked child, killed with SIGTERM */
-    all_pass &= run_case(1, "B", 128 + SIGKILL); /* busy-spinning child, killed with SIGKILL */
-    all_pass &= run_case(2, "C", 128 + SIGTERM); /* child kills itself with SIGTERM */
+    all_pass &= run_case(0, "A", SIGTERM); /* blocked child, killed with SIGTERM */
+    all_pass &= run_case(1, "B", SIGKILL); /* busy-spinning child, killed with SIGKILL */
+    all_pass &= run_case(2, "C", SIGTERM); /* child kills itself with SIGTERM */
 
     long bogus = sys_kill(9999, SIGTERM); /* pid that was never assigned */
     int case_d_pass = (bogus == -1);
