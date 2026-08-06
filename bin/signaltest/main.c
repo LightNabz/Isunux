@@ -69,6 +69,21 @@ int main(void) {
            (int)bogus, case_d_pass ? "PASS" : "FAIL");
     all_pass &= case_d_pass;
 
+    /* Regression test: pid 0 is the sentinel every free/unused
+     * process_pool slot has after being zeroed on reap -- NOT a real
+     * pid. process_find_by_pid() used to match it against any free
+     * slot and hand back a garbage, all-zero process_t* (including a
+     * NULL ->task), which sys_kill(0, ...) then dereferenced --
+     * crashing the entire kernel (a write to task_t.state at offset
+     * 0x38) from ordinary, unprivileged userland. This must return -1
+     * cleanly, same as any other nonexistent pid, and the kernel must
+     * obviously still be alive to print the result at all. */
+    long zero_pid = sys_kill(0, SIGTERM);
+    int case_e_pass = (zero_pid == -1);
+    printf("case E: sys_kill on pid 0 returned %d (expected -1, and this line printing at all means the kernel survived) -- %s\n",
+           (int)zero_pid, case_e_pass ? "PASS" : "FAIL");
+    all_pass &= case_e_pass;
+
     if (all_pass) {
         printf("PASS: all signal cases behaved correctly\n");
         return 0;

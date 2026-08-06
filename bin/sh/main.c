@@ -382,6 +382,36 @@ static int run_builtin(stage_t *s) {
         return 1;
     }
 
+    if (strcmp(s->argv[0], "kill") == 0) {
+        /* %N job-spec support genuinely can't live in the standalone
+         * bin/kill program -- that's a separate process with its own
+         * address space, no visibility at all into THIS shell's jobs[]
+         * table. Only a builtin can resolve %N, so this one shadows the
+         * external binary entirely, same as real bash. */
+        if (s->argc < 2) { printf("usage: kill [-SIG] <pid|%%job>\n"); return 1; }
+
+        int sig = SIGTERM;
+        int arg_i = 1;
+        if (s->argv[1][0] == '-') {
+            sig = str_to_int(s->argv[1] + 1);
+            arg_i = 2;
+            if (s->argc < 3) { printf("usage: kill [-SIG] <pid|%%job>\n"); return 1; }
+        }
+
+        const char *target = s->argv[arg_i];
+        if (target[0] == '%') {
+            job_t *j = find_job_by_id(str_to_int(target + 1));
+            if (!j) { printf("kill: no such job\n"); return 1; }
+            for (int k = 0; k < j->npids; k++) sys_kill(j->pids[k], sig);
+            return 1;
+        }
+
+        int pid = str_to_int(target);
+        if (pid <= 0) { printf("kill: invalid pid '%s'\n", target); return 1; }
+        if (sys_kill(pid, sig) < 0) printf("kill: (%d) - no such process or unrecognized signal\n", pid);
+        return 1;
+    }
+
     if (strcmp(s->argv[0], "jobs") == 0) {
         for (int i = 0; i < MAX_JOBS; i++) {
             if (!jobs[i].used) continue;

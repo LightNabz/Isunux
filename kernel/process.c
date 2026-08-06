@@ -134,6 +134,7 @@ process_t *process_current(void) {
 }
 
 process_t *process_find_by_pid(int pid) {
+    if (pid <= 0) return NULL; /* 0 is the "this slot is free" sentinel every unused process_pool entry has after being zeroed on reap -- never a real process. Matching it here used to hand back a garbage, all-zero process_t* (including a NULL ->task) to any caller that looked up pid 0, which is exactly what a careless sys_kill(0, ...) did. Negative pids aren't used by this kernel at all. */
     for (int i = 0; i < MAX_PROCESSES; i++) {
         if (process_pool[i].pid == pid) return &process_pool[i];
     }

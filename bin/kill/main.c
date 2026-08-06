@@ -9,12 +9,24 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    int pid = 0;
-    int neg = 0;
     const char *p = argv[1];
+    int neg = 0;
     if (*p == '-') { neg = 1; p++; }
+    if (*p < '0' || *p > '9') {
+        printf("kill: invalid pid '%s'\n", argv[1]);
+        return 1;
+    }
+    int pid = 0;
     while (*p >= '0' && *p <= '9') { pid = pid * 10 + (*p - '0'); p++; }
+    if (*p != '\0') {
+        printf("kill: invalid pid '%s'\n", argv[1]);
+        return 1;
+    }
     if (neg) pid = -pid;
+    if (pid <= 0) {
+        printf("kill: invalid pid '%s'\n", argv[1]);
+        return 1;
+    }
 
     int sig = SIGTERM;
     if (argc > 2) {
