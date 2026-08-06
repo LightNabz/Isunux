@@ -39,8 +39,21 @@ void irq_handler(interrupt_frame_t *frame) {
         }
         case 1: { /* keyboard */
             uint8_t scancode = inb(KEYBOARD_DATA_PORT);
-            keyboard_handle_scancode(scancode);
+
+            /* EOI *before* handling the scancode, not after -- mirrors
+             * the timer case above. keyboard_handle_scancode() can call
+             * process_signal_foreground() on Ctrl-C/Ctrl-Z, which may
+             * yield() (Ctrl-Z) or loop forever on yield() (Ctrl-C, since
+             * the task becomes TASK_TERMINATED and this call site is
+             * never resumed). If EOI waited until after that call, as it
+             * used to, the 8259 would never see it -- IRQ1's in-service
+             * bit stays set and the PIC refuses to deliver any further
+             * keyboard interrupts, freezing input for the rest of boot
+             * (Ctrl-C) or until a SIGCONT that can now never be typed
+             * (Ctrl-Z deadlocks itself this way). */
             pic_send_eoi(1);
+
+            keyboard_handle_scancode(scancode);
             return;
         }
         default:
