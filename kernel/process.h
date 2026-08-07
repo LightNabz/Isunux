@@ -21,6 +21,15 @@ typedef struct process {
     uint64_t heap_end;   /* the current "break" -- grows via process_brk() */
     uint64_t mmap_next;  /* next unused address in the mmap arena -- see process_mmap() */
     char cwd[VFS_MAX_PATH]; /* always absolute, no trailing slash except for "/" itself */
+    uint64_t uid; /* 0 = root. No login system exists yet, so pid 1 (the
+                    * first shell, built directly in kernel.c) starts as
+                    * root and everything else inherits from there via
+                    * fork() (process_clone_into) / exec() (same
+                    * process_t, untouched). The only way this ever
+                    * changes is process_setuid() -- and only root can
+                    * call that to become anyone, matching real Unix
+                    * setuid()'s privileged case. */
+    uint64_t gid;
     int pid;
     int parent_pid;
     int exit_code;
@@ -61,6 +70,29 @@ int process_mkdir(process_t *p, const char *path);
 int process_create(process_t *p, const char *path);
 int process_unlink(process_t *p, const char *path);
 int process_stat(process_t *p, const char *path, vfs_stat_t *out);
+
+/* Changes a node's mode bits. Only the owning uid or root may do this
+ * (matches real chmod()'s EPERM case) -- returns -1 if the path
+ * doesn't resolve or the caller isn't permitted. Only the low 9 bits
+ * of mode are kept (see vnode_t's mode field doc comment). */
+int process_chmod(process_t *p, const char *path, uint64_t mode);
+
+/* Changes a node's owning uid/gid. Root-only (real chown() lets an
+ * unprivileged owner give a file away too, under CAP_CHOWN rules that
+ * don't exist here -- root-only is the simpler, still-useful subset).
+ * Returns -1 if the path doesn't resolve or the caller isn't root. */
+int process_chown(process_t *p, const char *path, uint64_t uid, uint64_t gid);
+
+/* Changes p's own uid/gid. Allowed if p is currently root (uid 0, can
+ * become anyone -- the real Unix privileged case), or if new_uid/gid
+ * already equals the current one (a no-op "change" is always allowed,
+ * same as real setuid()). Any other case -- an unprivileged process
+ * trying to become someone else -- is rejected with -1. There's no
+ * login/password mechanism yet (that's Tier 5 territory); this is
+ * purely how a root shell can drop to a lesser uid for testing, the
+ * same primitive a real login/su would ultimately be built on. */
+int process_setuid(process_t *p, uint64_t new_uid);
+int process_setgid(process_t *p, uint64_t new_gid);
 
 /* Resolves path relative to p's cwd (with full "." / ".." support --
  * see vfs_resolve_path), confirms it's a directory, and updates p->cwd

@@ -51,6 +51,10 @@ int64_t do_exec(interrupt_frame_t *frame, const char *path, char **user_argv) {
         serial_print("[exec] path not found or not readable\n");
         return -1;
     }
+    if (!vfs_check_perm(node, proc->uid, proc->gid, VFS_PERM_EXEC)) {
+        serial_print("[exec] permission denied (missing execute bit)\n");
+        return -1;
+    }
 
     uint64_t file_size = 0;
     uint64_t exec_buf_pages = 0;

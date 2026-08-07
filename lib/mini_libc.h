@@ -23,6 +23,12 @@
 #define SYS_MMAP    20
 #define SYS_MUNMAP  21
 #define SYS_SET_FOREGROUND 22
+#define SYS_CHMOD   23
+#define SYS_CHOWN   24
+#define SYS_SETUID  25
+#define SYS_SETGID  26
+#define SYS_GETUID  27
+#define SYS_GETGID  28
 
 /* Mirrors kernel/syscall.h -- see there for why only these three exist. */
 #define PROT_READ  1
@@ -59,9 +65,19 @@
 typedef struct {
     unsigned long type;
     unsigned long size;
+    unsigned long uid;
+    unsigned long gid;
+    unsigned long mode;
 } stat_t;
 #define VNODE_FILE_T 0
 #define VNODE_DIR_T  1
+
+/* Mirrors kernel/vfs.h's VFS_PERM_* exactly -- same r=4/w=2/x=1 bits as
+ * a real Unix mode_t, combinable with '|' and usable directly as a
+ * chmod() mode argument (e.g. 0755, 0644). */
+#define VFS_PERM_READ  0x4
+#define VFS_PERM_WRITE 0x2
+#define VFS_PERM_EXEC  0x1
 
 /* Same convention as the kernel's syscall_handler expects: syscall
  * number in rax, args in rdi/rsi/rdx, triggered via `int 0x80`. */
@@ -186,6 +202,39 @@ static inline long sys_kill(int target_pid, int sig) {
 
 static inline long sys_getpid(void) {
     return syscall3(SYS_GETPID, 0, 0, 0);
+}
+
+/* Only the owning uid or root may chmod a path -- returns -1 on a bad
+ * path or a permission denial. mode is a raw rwxrwxrwx bitmask, e.g.
+ * 0755 or 0644 (there's no umask, so whatever's passed is exactly
+ * what's set). */
+static inline long sys_chmod(const char *path, unsigned long mode) {
+    return syscall3(SYS_CHMOD, (long)path, (long)mode, 0);
+}
+
+/* Root-only -- gives a path a new owning uid/gid. Returns -1 on a bad
+ * path or if the caller isn't root. */
+static inline long sys_chown(const char *path, unsigned long uid, unsigned long gid) {
+    return syscall3(SYS_CHOWN, (long)path, (long)uid, (long)gid);
+}
+
+/* Changes the calling process's own uid/gid. Only root can become
+ * someone else (real setuid()'s privileged case) -- there's no
+ * login/password system yet, so this is purely how a root shell can
+ * drop to a lesser uid for testing. Returns -1 if the caller isn't
+ * root and new_uid/gid isn't already the caller's own. */
+static inline long sys_setuid(unsigned long new_uid) {
+    return syscall3(SYS_SETUID, (long)new_uid, 0, 0);
+}
+static inline long sys_setgid(unsigned long new_gid) {
+    return syscall3(SYS_SETGID, (long)new_gid, 0, 0);
+}
+
+static inline long sys_getuid(void) {
+    return syscall3(SYS_GETUID, 0, 0, 0);
+}
+static inline long sys_getgid(void) {
+    return syscall3(SYS_GETGID, 0, 0, 0);
 }
 
 /* addr_hint is always ignored (no MAP_FIXED support) -- this kernel

@@ -190,6 +190,35 @@ void syscall_handler(interrupt_frame_t *frame) {
             frame->rax = (uint64_t)(int64_t)(proc ? proc->pid : -1);
             break;
         }
+        case SYS_CHMOD: {
+            const char *path = (const char *)frame->rdi;
+            uint64_t mode = frame->rsi;
+            frame->rax = (uint64_t)(int64_t)process_chmod(proc, path, mode);
+            break;
+        }
+        case SYS_CHOWN: {
+            const char *path = (const char *)frame->rdi;
+            uint64_t uid = frame->rsi;
+            uint64_t gid = frame->rdx;
+            frame->rax = (uint64_t)(int64_t)process_chown(proc, path, uid, gid);
+            break;
+        }
+        case SYS_SETUID: {
+            frame->rax = (uint64_t)(int64_t)process_setuid(proc, frame->rdi);
+            break;
+        }
+        case SYS_SETGID: {
+            frame->rax = (uint64_t)(int64_t)process_setgid(proc, frame->rdi);
+            break;
+        }
+        case SYS_GETUID: {
+            frame->rax = proc ? proc->uid : 0;
+            break;
+        }
+        case SYS_GETGID: {
+            frame->rax = proc ? proc->gid : 0;
+            break;
+        }
         case SYS_EXIT: {
             sys_exit((int)frame->rdi);
             break; /* unreachable -- sys_exit never returns */

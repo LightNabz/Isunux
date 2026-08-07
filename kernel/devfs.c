@@ -34,6 +34,9 @@ static vnode_t console_vnode = {
     .name = "tty",
     .ops = &console_ops,
     .parent = NULL, /* filled in by devfs_install() */
+    .mode = 0666, /* world read+write, root-owned (uid/gid default to 0) --
+                    * every process needs to reach the console regardless
+                    * of who it's running as, same as real /dev/tty */
 };
 
 /* ---- /dev/null -- standard POSIX null-device semantics: reads
@@ -66,6 +69,7 @@ static vnode_t null_vnode = {
     .name = "null",
     .ops = &null_ops,
     .parent = NULL,
+    .mode = 0666, /* world read+write, same reasoning as console_vnode above */
 };
 
 /* ---- /dev/zero -- reads always fill the buffer with zero bytes;
@@ -89,6 +93,7 @@ static vnode_t zero_vnode = {
     .name = "zero",
     .ops = &zero_ops,
     .parent = NULL,
+    .mode = 0666, /* world read+write, same reasoning as console_vnode above */
 };
 
 typedef struct {

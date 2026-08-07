@@ -42,6 +42,8 @@ void process_init(process_t *p, uint64_t pml4_phys, uint64_t heap_start) {
     p->mmap_next = MMAP_ARENA_BASE;
     p->cwd[0] = '/';
     p->cwd[1] = '\0';
+    p->uid = 0; /* root -- no login system exists yet, see process.h's doc comment on process_t::uid */
+    p->gid = 0;
 
     for (int fd = 0; fd < 3; fd++) {
         p->fds[fd].node = devfs_console_vnode();
@@ -55,6 +57,8 @@ void process_clone_into(process_t *dst, process_t *src, uint64_t new_pml4_phys) 
     dst->heap_start = src->heap_start;
     dst->heap_end = src->heap_end;
     dst->mmap_next = src->mmap_next;
+    dst->uid = src->uid;
+    dst->gid = src->gid;
     for (int i = 0; i < VFS_MAX_PATH; i++) dst->cwd[i] = src->cwd[i];
     for (int fd = 0; fd < MAX_FDS; fd++) {
         dst->fds[fd] = src->fds[fd]; /* struct copy -- by value, see process.h note */
@@ -274,6 +278,7 @@ int process_munmap(process_t *p, uint64_t addr, uint64_t length) {
 int process_open(process_t *p, const char *path) {
     vnode_t *node = vfs_resolve_path_cwd(p->cwd, path);
     if (!node) return -1;
+    if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_READ)) return -1;
 
     for (int fd = 3; fd < MAX_FDS; fd++) {
         if (!p->fds[fd].used) {
@@ -292,6 +297,7 @@ int process_chdir(process_t *p, const char *path) {
 
     vnode_t *node = vfs_resolve_path(combined);
     if (!node || node->type != VNODE_DIR) return -1;
+    if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_EXEC)) return -1; /* "search" permission -- the x bit on a directory, same meaning as real Unix */
 
     /* store the canonical path, not the raw combined string -- so cwd
      * is always a clean "/etc", never "/../home/../etc", no matter
@@ -304,6 +310,7 @@ long process_read(process_t *p, int fd, void *buf, uint64_t count) {
     if (fd < 0 || fd >= MAX_FDS || !p->fds[fd].used) return -1;
     vnode_t *node = p->fds[fd].node;
     if (!node->ops || !node->ops->read) return -1;
+    if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_READ)) return -1;
 
     long n = node->ops->read(node, buf, count, p->fds[fd].offset);
     if (n > 0) p->fds[fd].offset += (uint64_t)n;
@@ -314,6 +321,7 @@ long process_write(process_t *p, int fd, const void *buf, uint64_t count) {
     if (fd < 0 || fd >= MAX_FDS || !p->fds[fd].used) return -1;
     vnode_t *node = p->fds[fd].node;
     if (!node->ops || !node->ops->write) return -1;
+    if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_WRITE)) return -1;
 
     long n = node->ops->write(node, buf, count, p->fds[fd].offset);
     if (n > 0) p->fds[fd].offset += (uint64_t)n;
@@ -421,20 +429,39 @@ int process_mkdir(process_t *p, const char *path) {
     char name[VFS_MAX_NAME];
     vnode_t *dir = resolve_parent_dir(p, path, name, sizeof(name));
     if (!dir || !dir->ops || !dir->ops->mkdir) return -1;
-    return dir->ops->mkdir(dir, name);
+    if (!vfs_check_perm(dir, p->uid, p->gid, VFS_PERM_WRITE)) return -1;
+
+    int rc = dir->ops->mkdir(dir, name);
+    /* the filesystem itself has no notion of "who's asking" -- it just
+     * created the node with tmpfs's own default (root-owned). Give it
+     * to the actual creating process right after, same two-step split
+     * every other identity-aware op here uses. */
+    if (rc == 0 && dir->ops->lookup) {
+        vnode_t *created = dir->ops->lookup(dir, name);
+        if (created) { created->uid = p->uid; created->gid = p->gid; }
+    }
+    return rc;
 }
 
 int process_create(process_t *p, const char *path) {
     char name[VFS_MAX_NAME];
     vnode_t *dir = resolve_parent_dir(p, path, name, sizeof(name));
     if (!dir || !dir->ops || !dir->ops->create) return -1;
-    return dir->ops->create(dir, name);
+    if (!vfs_check_perm(dir, p->uid, p->gid, VFS_PERM_WRITE)) return -1;
+
+    int rc = dir->ops->create(dir, name);
+    if (rc == 0 && dir->ops->lookup) {
+        vnode_t *created = dir->ops->lookup(dir, name);
+        if (created) { created->uid = p->uid; created->gid = p->gid; }
+    }
+    return rc;
 }
 
 int process_unlink(process_t *p, const char *path) {
     char name[VFS_MAX_NAME];
     vnode_t *dir = resolve_parent_dir(p, path, name, sizeof(name));
     if (!dir || !dir->ops || !dir->ops->unlink) return -1;
+    if (!vfs_check_perm(dir, p->uid, p->gid, VFS_PERM_WRITE)) return -1; /* removing an entry mutates the DIRECTORY, so it's the dir's write bit that governs it, same as real Unix unlink() */
     return dir->ops->unlink(dir, name);
 }
 
@@ -444,8 +471,40 @@ int process_stat(process_t *p, const char *path, vfs_stat_t *out) {
 
     out->type = (uint64_t)node->type;
     out->size = 0;
+    out->uid = node->uid;
+    out->gid = node->gid;
+    out->mode = node->mode;
     if (node->ops && node->ops->stat) {
         node->ops->stat(node, &out->size);
     }
+    return 0;
+}
+
+int process_chmod(process_t *p, const char *path, uint64_t mode) {
+    vnode_t *node = vfs_resolve_path_cwd(p->cwd, path);
+    if (!node) return -1;
+    if (p->uid != 0 && p->uid != node->uid) return -1; /* only the owner or root may chmod */
+    node->mode = mode & 0777; /* only the low 9 bits mean anything -- see vnode_t::mode's doc comment */
+    return 0;
+}
+
+int process_chown(process_t *p, const char *path, uint64_t uid, uint64_t gid) {
+    vnode_t *node = vfs_resolve_path_cwd(p->cwd, path);
+    if (!node) return -1;
+    if (p->uid != 0) return -1; /* root-only, see process.h's doc comment on process_chown */
+    node->uid = uid;
+    node->gid = gid;
+    return 0;
+}
+
+int process_setuid(process_t *p, uint64_t new_uid) {
+    if (p->uid != 0 && new_uid != p->uid) return -1;
+    p->uid = new_uid;
+    return 0;
+}
+
+int process_setgid(process_t *p, uint64_t new_gid) {
+    if (p->uid != 0 && new_gid != p->gid) return -1;
+    p->gid = new_gid;
     return 0;
 }

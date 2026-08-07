@@ -175,6 +175,7 @@ void tmpfs_init(void) {
     root->vnode.ops = &tmpfs_dir_ops;
     set_name(&root->vnode, "/");
     root->vnode.parent = &root->vnode; /* .. from / stays at / */
+    root->vnode.mode = VFS_DEFAULT_DIR_MODE; /* root-owned (uid/gid 0, already zeroed) */
 }
 
 vnode_t *tmpfs_get_root(void) {
@@ -189,6 +190,11 @@ tmpfs_node_t *tmpfs_create_file(tmpfs_node_t *dir, const char *name) {
     f->vnode.ops = &tmpfs_file_ops;
     set_name(&f->vnode, name);
     f->vnode.parent = &dir->vnode;
+    f->vnode.mode = VFS_DEFAULT_FILE_MODE; /* uid/gid stay 0 (root) here -- the process-syscall
+                                             * layer (process_create) overwrites them with the
+                                             * creating process's real uid/gid right after this
+                                             * returns; boot-time seeding (vfs_init) leaves files
+                                             * root-owned, which is correct for /bin, /hello.txt, etc. */
 
     uint64_t phys = pmm_alloc_pages(TMPFS_FILE_INITIAL_PAGES);
     f->data = (uint8_t *)(vmm_hhdm_offset() + phys);
@@ -208,6 +214,7 @@ tmpfs_node_t *tmpfs_create_dir(tmpfs_node_t *dir, const char *name) {
     d->vnode.ops = &tmpfs_dir_ops;
     set_name(&d->vnode, name);
     d->vnode.parent = &dir->vnode;
+    d->vnode.mode = VFS_DEFAULT_DIR_MODE; /* see tmpfs_create_file's note -- same deal */
 
     d->next_sibling = dir->first_child;
     dir->first_child = d;

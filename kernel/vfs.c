@@ -39,6 +39,10 @@ void vfs_init(struct limine_module_response *modules) {
             struct limine_file *mod = modules->modules[i];
             tmpfs_node_t *f = tmpfs_create_file(bin_dir, basename_of(mod->path));
             f->vnode.ops->write(&f->vnode, mod->address, mod->size, 0);
+            f->vnode.mode = VFS_DEFAULT_EXEC_MODE; /* 0755 -- these are programs, they need
+                                                     * the execute bit or exec()'s new
+                                                     * permission check would make every
+                                                     * boot-seeded binary unrunnable. */
         }
     }
 
@@ -59,6 +63,17 @@ void vfs_init(struct limine_module_response *modules) {
      * tmpfs-backed files. */
     tmpfs_node_t *dev_dir = tmpfs_create_dir((tmpfs_node_t *)root_vnode, "dev");
     devfs_install(&dev_dir->vnode);
+}
+
+int vfs_check_perm(vnode_t *node, uint64_t uid, uint64_t gid, int want) {
+    if (uid == 0) return 1; /* root -- bypasses all permission checks, same as real Unix */
+
+    uint64_t bits;
+    if (uid == node->uid) bits = (node->mode >> 6) & 0x7; /* owner bits */
+    else if (gid == node->gid) bits = (node->mode >> 3) & 0x7; /* group bits */
+    else bits = node->mode & 0x7; /* other bits */
+
+    return (bits & (uint64_t)want) == (uint64_t)want;
 }
 
 void vfs_split_path(const char *path, char *dir_out, uint64_t dir_out_size,

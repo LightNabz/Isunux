@@ -75,7 +75,52 @@ typedef struct vnode {
                   * the SAME shared object (a pipe's read end and write
                   * end both need to find the same pipe_t), which is
                   * what this field is for instead. */
+    uint64_t uid;  /* owning user. 0 = root. Set by whoever creates the
+                     * node (tmpfs_create_file/dir default it to 0; the
+                     * process-syscall layer then overwrites it with the
+                     * creating process's own uid right after, same
+                     * two-step "filesystem makes it, syscall layer owns
+                     * it" split process_create/process_mkdir already use
+                     * for everything else). Devices (devfs) stay
+                     * root-owned forever -- nothing ever chown()s them. */
+    uint64_t gid;  /* owning group. Same story as uid. */
+    uint64_t mode; /* Unix-style rwxrwxrwx permission bits, low 9 bits
+                     * only (owner/group/other x 3), e.g. 0644 or 0755 --
+                     * no setuid/setgid/sticky bits, no ACLs. This is the
+                     * *basic* uid/gid/mode model Tier 1 asks for; real
+                     * multi-user login, /etc/passwd, and group
+                     * membership lists are explicitly a later
+                     * "permission enhancement" item (Tier 5), not this
+                     * one. */
 } vnode_t;
+
+/* Permission-check bits for vfs_check_perm's `want` argument -- same
+ * numeric meaning as the low 3 bits of a real Unix mode_t (r=4, w=2,
+ * x=1), combinable with '|'. */
+#define VFS_PERM_READ  0x4
+#define VFS_PERM_WRITE 0x2
+#define VFS_PERM_EXEC  0x1
+
+/* Sensible starting mode bits for freshly created nodes -- matches
+ * real Unix's usual umask-less defaults (0644 files, 0755 dirs: owner
+ * gets rw/rwx, group and other get r/rx but never w). */
+#define VFS_DEFAULT_FILE_MODE 0644
+#define VFS_DEFAULT_DIR_MODE  0755
+#define VFS_DEFAULT_EXEC_MODE 0755 /* same bits as a dir's default, but named for its
+                                     * actual use (boot-seeded /bin programs) so it
+                                     * doesn't read like a copy-paste mistake */
+
+/* Checks whether a caller identified by (uid, gid) has ALL of the
+ * `want` permission bits (VFS_PERM_READ/WRITE/EXEC, OR'd together) on
+ * node, using node's mode/uid/gid exactly like real Unix access
+ * control: owner bits apply if uid matches node->uid, else group bits
+ * if gid matches node->gid, else the "other" bits. uid 0 (root) always
+ * passes, unconditionally -- there's no login system yet, so pid 1
+ * (the first shell) starts as root and everything descends from that;
+ * root bypassing checks entirely is what lets that first shell still
+ * do normal, permission-oblivious things like creating /etc files
+ * during boot. Returns 1 if allowed, 0 if not. */
+int vfs_check_perm(vnode_t *node, uint64_t uid, uint64_t gid, int want);
 
 struct limine_module_response; /* from limine.h -- forward-declared here
                                  * so vfs.h doesn't need to depend on the
@@ -144,6 +189,9 @@ void vfs_split_path(const char *path, char *dir_out, uint64_t dir_out_size,
 typedef struct {
     uint64_t type;
     uint64_t size;
+    uint64_t uid;
+    uint64_t gid;
+    uint64_t mode;
 } vfs_stat_t;
 
 /* Reads an entire file into a freshly PMM-allocated buffer -- no fixed

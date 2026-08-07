@@ -24,6 +24,12 @@
 #define SYS_MMAP    20
 #define SYS_MUNMAP  21
 #define SYS_SET_FOREGROUND 22
+#define SYS_CHMOD   23
+#define SYS_CHOWN   24
+#define SYS_SETUID  25
+#define SYS_SETGID  26
+#define SYS_GETUID  27
+#define SYS_GETGID  28
 
 /* Real Linux prot/flags values, same "why invent our own" reasoning as
  * the signal numbers above. Only what our anonymous-only mmap()
