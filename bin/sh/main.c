@@ -563,7 +563,7 @@ int main(int argc, char **argv) {
     printf("\nISUNUX shell -- type a command (try: ls, echo hi | cat, cat hello.txt > /tmp/copy.txt)\n");
 
     for (;;) {
-        printf("$ ");
+        printf(sys_getuid() == 0 ? "# " : "$ ");
 
         char line[MAX_LINE];
         long n = sys_read(0, line, sizeof(line) - 1);
