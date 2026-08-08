@@ -25,6 +25,42 @@ static inline uint8_t inb(uint16_t port) {
     return ret;
 }
 
+static inline void outw(uint16_t port, uint16_t val) {
+    asm volatile ("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint16_t inw(uint16_t port) {
+    uint16_t ret;
+    asm volatile ("inw %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+/* Reads `count` 16-bit words from `port` into `addr`, back to back --
+ * this is how a whole ATA PIO sector gets pulled in (256 words = 512
+ * bytes) without an inw() call per word. `rep insw` is the x86
+ * string-instruction form of exactly that loop, done in one
+ * instruction. */
+static inline void insw(uint16_t port, void *addr, uint32_t count) {
+    asm volatile ("rep insw" : "+D"(addr), "+c"(count) : "d"(port) : "memory");
+}
+
+static inline void outsw(uint16_t port, const void *addr, uint32_t count) {
+    asm volatile ("rep outsw" : "+S"(addr), "+c"(count) : "d"(port) : "memory");
+}
+
+/* The classic "write a throwaway byte to port 0x80" delay trick --
+ * 0x80 is the POST-diagnostic-code port, unused once boot is past
+ * POST, so writing to it is a safe, guaranteed-uncached bus cycle that
+ * costs roughly one I/O-bus turnaround (~1us on real hardware). ATA
+ * PIO relies on this in a few places to satisfy the spec's 400ns
+ * "let the status bits settle after selecting a drive" rule -- see
+ * ata.c's ata_delay_400ns(). Named for what it does, not how; the
+ * exact mechanism is a well-known OSDev-wiki idiom, not something
+ * this project invented. */
+static inline void io_wait(void) {
+    outb(0x80, 0);
+}
+
 static inline uint64_t k_strlen(const char *s) {
     uint64_t n = 0;
     while (s[n]) n++;

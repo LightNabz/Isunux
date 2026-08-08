@@ -19,6 +19,7 @@
 #include "elf.h"
 #include "userstack.h"
 #include "fb.h"
+#include "ata.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -107,6 +108,49 @@ void _start(void) {
 
     vmm_init(hhdm_offset, kernel_phys, kernel_virt);
     serial_print("\n[ok] pmm + vmm initialized, cr3 on our own kernel tables\n");
+
+    ata_init();
+    if (ata_present()) {
+        /* Round-trip smoke test: write a recognizable pattern to a
+         * sector, read it back into a separate buffer, and compare --
+         * this actually exercises both directions plus the write
+         * path's cache-flush, unlike a bare read (which could
+         * "succeed" against total garbage and look fine). Sector 100
+         * is arbitrary but deliberately NOT sector 0 -- once the FAT
+         * layer lands, sector 0 becomes the boot sector/BPB, and
+         * scribbling test data there would be actively harmful to
+         * keep around. This whole block is throwaway scaffolding for
+         * this milestone only; it goes away once FAT has its own
+         * tests to exercise the driver instead. */
+        #define ATA_SELFTEST_LBA 100
+        uint8_t write_buf[512];
+        uint8_t read_buf[512];
+        for (int i = 0; i < 512; i++) write_buf[i] = (uint8_t)(i * 3 + 7);
+
+        int wrc = ata_write_sectors(ATA_SELFTEST_LBA, 1, write_buf);
+        int rdc = wrc == 0 ? ata_read_sectors(ATA_SELFTEST_LBA, 1, read_buf) : -1;
+        int match = 1;
+        if (rdc == 0) {
+            for (int i = 0; i < 512; i++) {
+                if (write_buf[i] != read_buf[i]) { match = 0; break; }
+            }
+        }
+
+        if (wrc == 0 && rdc == 0 && match) {
+            serial_print("[ok] ata read/write self-test passed (sector round-trip verified)\n");
+        } else {
+            serial_print("!!! ata read/write self-test FAILED (wrc=");
+            serial_print_dec((uint64_t)(wrc == 0 ? 0 : 1));
+            serial_print(" rdc=");
+            serial_print_dec((uint64_t)(rdc == 0 ? 0 : 1));
+            serial_print(" match=");
+            serial_print_dec((uint64_t)match);
+            serial_print(") -- continuing boot anyway, nothing depends on disk yet\n");
+        }
+        #undef ATA_SELFTEST_LBA
+    } else {
+        serial_print("[ata] no disk attached this boot -- fine for now, nothing depends on it yet\n");
+    }
 
     vfs_init((struct limine_module_response *)module_request.response);
     serial_print("[ok] vfs initialized (tmpfs root, seeded /hello.txt)\n");

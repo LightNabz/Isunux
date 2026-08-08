@@ -1,5 +1,6 @@
 override KERNEL := kernel.elf
 override ISO := isunux.iso
+override DISK := disk.img
 
 CC := gcc
 LD := ld
@@ -57,7 +58,7 @@ USER_LDFLAGS := -nostdlib \
 	-m elf_x86_64 \
 	-T lib/user_link.ld
 
-C_SRCS := kernel/kernel.c kernel/serial.c kernel/term.c kernel/fb.c kernel/gdt.c kernel/idt.c kernel/exceptions.c kernel/pic.c kernel/pit.c kernel/irq.c kernel/pmm.c kernel/vmm.c kernel/task.c kernel/tss.c kernel/syscall.c kernel/vfs.c kernel/tmpfs.c kernel/devfs.c kernel/pipe.c kernel/process.c kernel/elf.c kernel/userstack.c kernel/fork.c kernel/exec.c kernel/keyboard.c
+C_SRCS := kernel/kernel.c kernel/serial.c kernel/term.c kernel/fb.c kernel/gdt.c kernel/idt.c kernel/exceptions.c kernel/pic.c kernel/pit.c kernel/irq.c kernel/pmm.c kernel/vmm.c kernel/task.c kernel/tss.c kernel/syscall.c kernel/vfs.c kernel/tmpfs.c kernel/devfs.c kernel/pipe.c kernel/process.c kernel/elf.c kernel/userstack.c kernel/fork.c kernel/exec.c kernel/keyboard.c kernel/ata.c
 ASM_SRCS := kernel/isr.asm kernel/switch.asm kernel/usermode.asm
 OBJS := $(C_SRCS:.c=.o) $(ASM_SRCS:.asm=.o)
 
@@ -132,13 +133,36 @@ iso: $(KERNEL) $(USER_ELFS)
 		iso_root -o $(ISO)
 	./boot/limine/limine bios-install $(ISO)
 
-run: iso
+run: iso $(DISK)
 	qemu-system-x86_64 -M q35 -m 256M -cdrom $(ISO) -boot d \
+		-device piix3-ide,id=ide -drive id=disk,file=$(DISK),if=none,format=raw \
+		-device ide-hd,drive=disk,bus=ide.0,unit=0 \
 		-serial stdio -display none -no-reboot -no-shutdown
 
-gui: iso
+gui: iso $(DISK)
 	qemu-system-x86_64 -M q35 -m 256M -cdrom $(ISO) -boot d \
+		-device piix3-ide,id=ide -drive id=disk,file=$(DISK),if=none,format=raw \
+		-device ide-hd,drive=disk,bus=ide.0,unit=0 \
 		-serial stdio -display sdl -no-reboot -no-shutdown
+
+# The persistent disk ATA drives against. Deliberately has NO
+# prerequisites -- this rule only ever fires when disk.img doesn't
+# exist at all, never because something "newer" touched it, so it's
+# safe to run 'make run' over and over across reboots without ever
+# silently re-zeroing whatever's actually been written to the disk.
+# 'clean' below deliberately does NOT remove this file, for the same
+# reason -- see its comment.
+#
+# q35 has no legacy IDE controller by default (its native SATA
+# controller is AHCI) -- piix3-ide is added explicitly here so the
+# primary channel answers on the classic 0x1F0/0x3F6 ports this
+# driver expects, without needing PCI enumeration to find anything
+# (see kernel/ata.h's top comment for why that's the point).
+$(DISK):
+	dd if=/dev/zero of=$(DISK) bs=1M count=16
 
 clean:
 	rm -rf $(OBJS) $(KERNEL) $(ISO) iso_root $(USER_PROG_OBJS) $(USER_ELFS) $(USER_RUNTIME_OBJS) $(USER_CRT0_OBJ)
+	# deliberately NOT removing $(DISK) here -- it's persistent user
+	# data, not a build artifact. Use 'rm disk.img' by hand if you
+	# actually want a fresh, blank disk.
