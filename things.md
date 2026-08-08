@@ -6,10 +6,10 @@
 
 # Tier 1 — The stuff that makes it a real multi-tasking system, not a demo
 
-- ~~Signals — `SIGINT` (Ctrl-C), `SIGKILL`, `SIGTERM`, `SIGCHLD` at minimum~~ -- done. Without this, you can't kill a hung process from the shell or have the shell learn a child exited without polling `waitpid()` in a busy loop. This is probably the single biggest "feels like a toy" gap right now.
-- ~~Job control — background (`&`), foreground, Ctrl-Z/suspend. Needs signals first~~ -- done. 
-- ~~`mmap()` (even just anonymous) — heap growth beyond whatever fixed layout `exec()` currently sets up; `malloc()` in `mini_malloc.c` is presumably working off a fixed static arena right now, which caps every program's memory ceiling~~ -- done.
-- ~~User/group + permissions — no uid/gid, no file mode bits, everything is one implicit identity~~ done. A Unix without permission enforcement doesn't feel like Unix even if it behaves like one when nobody's poking at it.
+- Signals — `SIGINT` (Ctrl-C), `SIGKILL`, `SIGTERM`, `SIGCHLD` at minimum. Without this, you can't kill a hung process from the shell or have the shell learn a child exited without polling `waitpid()` in a busy loop. This is probably the single biggest "feels like a toy" gap right now.
+- Job control — background (`&`), foreground, Ctrl-Z/suspend. Needs signals first.
+- `mmap()` (even just anonymous) — heap growth beyond whatever fixed layout `exec()` currently sets up; `malloc()` in `mini_malloc.c` is presumably working off a fixed static arena right now, which caps every program's memory ceiling.
+- User/group + permissions — no uid/gid, no file mode bits, everything is one implicit identity. A Unix without permission enforcement doesn't feel like Unix even if it behaves like one when nobody's poking at it.
 
 # Tier 2 — Persistence and real I/O (the "actually usable" tier)
 

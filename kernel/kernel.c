@@ -129,22 +129,27 @@ void _start(void) {
 
         int wrc = ata_write_sectors(ATA_SELFTEST_LBA, 1, write_buf);
         int rdc = wrc == 0 ? ata_read_sectors(ATA_SELFTEST_LBA, 1, read_buf) : -1;
-        int match = 1;
+        int match = -1; /* -1 = never compared (write or read itself already failed) */
         if (rdc == 0) {
+            match = 1;
             for (int i = 0; i < 512; i++) {
                 if (write_buf[i] != read_buf[i]) { match = 0; break; }
             }
         }
 
-        if (wrc == 0 && rdc == 0 && match) {
+        if (wrc == 0 && rdc == 0 && match == 1) {
             serial_print("[ok] ata read/write self-test passed (sector round-trip verified)\n");
         } else {
             serial_print("!!! ata read/write self-test FAILED (wrc=");
             serial_print_dec((uint64_t)(wrc == 0 ? 0 : 1));
             serial_print(" rdc=");
             serial_print_dec((uint64_t)(rdc == 0 ? 0 : 1));
-            serial_print(" match=");
-            serial_print_dec((uint64_t)match);
+            if (match < 0) {
+                serial_print(" match=n/a (never compared)");
+            } else {
+                serial_print(" match=");
+                serial_print_dec((uint64_t)match);
+            }
             serial_print(") -- continuing boot anyway, nothing depends on disk yet\n");
         }
         #undef ATA_SELFTEST_LBA

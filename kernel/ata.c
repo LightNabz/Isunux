@@ -61,12 +61,31 @@ static void ata_delay_400ns(void) {
     for (int i = 0; i < 4; i++) inb(ATA_REG_ALT_STATUS);
 }
 
+/* Prints the status + error registers verbatim on a failure path, so
+ * a bug report says WHY a wait gave up, not just that it did. Kept
+ * cheap and unconditional (not behind a debug flag) -- these only
+ * ever fire on the failure path, which should be rare, and knowing
+ * what actually went wrong on real/emulated hardware neither of us
+ * can single-step is worth far more than the odd extra serial line. */
+static void ata_dump_regs(const char *ctx) {
+    uint8_t status = inb(ATA_REG_STATUS);
+    uint8_t error = inb(ATA_REG_ERROR);
+    serial_print("[ata] ");
+    serial_print(ctx);
+    serial_print(": status=0x");
+    serial_print_hex(status);
+    serial_print(" error=0x");
+    serial_print_hex(error);
+    serial_print("\n");
+}
+
 /* Polls until BSY clears. Returns 0 once it does, -1 if it never does
  * within ATA_POLL_MAX_ITERS (see that macro's comment). */
-static int ata_wait_not_busy(void) {
+static int ata_wait_not_busy(const char *ctx) {
     for (int i = 0; i < ATA_POLL_MAX_ITERS; i++) {
         if ((inb(ATA_REG_STATUS) & ATA_STATUS_BSY) == 0) return 0;
     }
+    ata_dump_regs(ctx);
     return -1;
 }
 
@@ -74,12 +93,16 @@ static int ata_wait_not_busy(void) {
  * reports it can't (ERR or DF set). Returns 0 on DRQ, -1 on
  * error/fault/timeout -- callers don't need to distinguish those
  * cases, they all just mean "this sector isn't happening." */
-static int ata_wait_drq(void) {
+static int ata_wait_drq(const char *ctx) {
     for (int i = 0; i < ATA_POLL_MAX_ITERS; i++) {
         uint8_t status = inb(ATA_REG_STATUS);
-        if (status & (ATA_STATUS_ERR | ATA_STATUS_DF)) return -1;
+        if (status & (ATA_STATUS_ERR | ATA_STATUS_DF)) {
+            ata_dump_regs(ctx);
+            return -1;
+        }
         if (status & ATA_STATUS_DRQ) return 0;
     }
+    ata_dump_regs(ctx);
     return -1;
 }
 
@@ -113,7 +136,7 @@ void ata_init(void) {
         return;
     }
 
-    if (ata_wait_not_busy() != 0) {
+    if (ata_wait_not_busy("identify") != 0) {
         serial_print("[ata] drive present but never cleared BSY, giving up\n");
         return;
     }
@@ -128,7 +151,7 @@ void ata_init(void) {
         return;
     }
 
-    if (ata_wait_drq() != 0) {
+    if (ata_wait_drq("identify") != 0) {
         serial_print("[ata] drive present but IDENTIFY never signaled data ready\n");
         return;
     }
@@ -162,6 +185,11 @@ uint32_t ata_sector_count(void) {
  * by read and write since everything up to the actual command byte
  * (0x20 vs 0x30) is identical. */
 static void ata_setup_lba28(uint32_t lba, uint8_t count) {
+    ata_wait_not_busy("setup (pre-select)"); /* best-effort -- if the bus is
+                                               * wedged, the command below will
+                                               * fail cleanly and diagnostically
+                                               * anyway, so there's no need to
+                                               * bail out early here too */
     outb(ATA_REG_DRIVE, (uint8_t)(ATA_DRIVE_MASTER_LBA | ((lba >> 24) & 0x0F)));
     ata_delay_400ns();
     outb(ATA_REG_SECCOUNT, count);
@@ -181,7 +209,7 @@ int ata_read_sectors(uint32_t lba, uint8_t count, void *buf) {
         /* the drive raises DRQ once PER SECTOR when count > 1, not
          * once for the whole transfer -- so this waits again before
          * each 512-byte chunk, not just once up front. */
-        if (ata_wait_drq() != 0) return -1;
+        if (ata_wait_drq("read") != 0) return -1;
         insw(ATA_REG_DATA, dst, 256); /* 256 words = 512 bytes = one sector */
         dst += 512;
     }
@@ -196,7 +224,7 @@ int ata_write_sectors(uint32_t lba, uint8_t count, const void *buf) {
 
     const uint8_t *src = (const uint8_t *)buf;
     for (uint8_t i = 0; i < count; i++) {
-        if (ata_wait_drq() != 0) return -1;
+        if (ata_wait_drq("write") != 0) return -1;
         outsw(ATA_REG_DATA, src, 256);
         src += 512;
     }
@@ -204,9 +232,9 @@ int ata_write_sectors(uint32_t lba, uint8_t count, const void *buf) {
     /* Flush the drive's write cache and wait for it to confirm --
      * see ata.h's doc comment on this function for why this isn't
      * optional. */
-    if (ata_wait_not_busy() != 0) return -1;
+    if (ata_wait_not_busy("write (pre-flush)") != 0) return -1;
     outb(ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
-    if (ata_wait_not_busy() != 0) return -1;
+    if (ata_wait_not_busy("write (post-flush)") != 0) return -1;
 
     return 0;
 }
