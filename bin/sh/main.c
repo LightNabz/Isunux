@@ -348,6 +348,21 @@ static int setup_redirections(stage_t *s) {
  * access to the shell's own env table, so they stay builtins too.
  * None of these run inside a pipeline (nstages > 1) -- piping a
  * builtin isn't supported, a documented scope cut. */
+/* Reclaims the foreground for the shell itself after a child (or
+ * pipeline, or job) exits or stops. Always resets the console back to
+ * canonical mode with echo on, alongside clearing the foreground pid
+ * set -- a raw-mode or echo-off program that crashes or gets killed
+ * must never leave the shell stuck reading unechoed, unbuffered
+ * input. This is the one place that invariant is enforced; every
+ * "back at the prompt" call site below goes through here instead of
+ * calling sys_set_foreground(0, 0) directly, so it can't be
+ * forgotten if a third call site is ever added. */
+static void reclaim_foreground(void) {
+    sys_set_foreground(0, 0);
+    sys_tty_set_raw(0);
+    sys_tty_set_echo(1);
+}
+
 static int run_builtin(stage_t *s) {
     if (s->argc == 0) return 1; /* nothing to do, but "handled" */
 
@@ -424,6 +439,7 @@ static int run_builtin(stage_t *s) {
         job_t *j = resolve_job_arg(s->argc > 1 ? s->argv[1] : NULL);
         if (!j) { printf("fg: no such job\n"); return 1; }
 
+
         printf("%s\n", j->cmdline);
         if (j->stopped) {
             for (int k = 0; k < j->npids; k++) sys_kill(j->pids[k], SIGCONT);
@@ -437,7 +453,7 @@ static int run_builtin(stage_t *s) {
             sys_waitpid(j->pids[k], &status);
             if (WIFSTOPPED(status)) any_stopped = 1;
         }
-        sys_set_foreground(0, 0); /* back at the prompt -- clear it */
+        reclaim_foreground(); /* back at the prompt -- clear the foreground pid set and reset canonical/echo */
 
         if (any_stopped) {
             j->stopped = 1; /* re-stopped (another Ctrl-Z) -- keep the same job entry */
@@ -545,7 +561,7 @@ static void run_pipeline(stage_t *stages, int nstages, int background, const cha
         if (WIFSTOPPED(status)) any_stopped = 1; /* not reaped -- still alive, just suspended. Every OTHER stage in this same pipeline was in the foreground set too, so a Ctrl-Z here stopped the whole pipeline together, not just this one stage -- none of them are stuck blocked on a now-frozen upstream/downstream neighbor. */
     }
 
-    sys_set_foreground(0, 0); /* back at the prompt -- clear it so a stray Ctrl-C/Ctrl-Z has nothing to hit (notably not even the shell's own pid -- see sys_set_foreground's doc comment for why) */
+    reclaim_foreground(); /* back at the prompt -- clear the foreground pid set and reset canonical/echo, so a stray Ctrl-C/Ctrl-Z has nothing to hit (notably not even the shell's own pid -- see sys_set_foreground's doc comment for why) and a raw-mode/echo-off program that crashed doesn't leave the shell stuck */
 
     if (any_stopped) {
         int job_id = add_job(child_pids, nstages, cmdline, 1);

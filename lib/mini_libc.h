@@ -29,6 +29,8 @@
 #define SYS_SETGID  26
 #define SYS_GETUID  27
 #define SYS_GETGID  28
+#define SYS_TTY_SET_RAW  29
+#define SYS_TTY_SET_ECHO 30
 
 /* Mirrors kernel/syscall.h -- see there for why only these three exist. */
 #define PROT_READ  1
@@ -235,6 +237,22 @@ static inline long sys_getuid(void) {
 }
 static inline long sys_getgid(void) {
     return syscall3(SYS_GETGID, 0, 0, 0);
+}
+
+/* Switches the console between canonical (line-buffered, default) and
+ * raw (every keystroke delivered immediately) input. Global, not
+ * per-fd -- see keyboard.h's doc comment on tty_set_raw() for why.
+ * Ctrl-C/Ctrl-Z keep working in either mode. */
+static inline long sys_tty_set_raw(int enable) {
+    return syscall3(SYS_TTY_SET_RAW, (long)enable, 0, 0);
+}
+
+/* Toggles local echo, independent of canonical/raw mode -- canonical
+ * mode with echo off is a real, useful combination (the traditional
+ * shape of a password-style prompt: line editing still works, nothing
+ * is drawn). See keyboard.h's doc comment on tty_set_echo(). */
+static inline long sys_tty_set_echo(int enable) {
+    return syscall3(SYS_TTY_SET_ECHO, (long)enable, 0, 0);
 }
 
 /* addr_hint is always ignored (no MAP_FIXED support) -- this kernel

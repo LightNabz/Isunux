@@ -7,18 +7,16 @@
  * disk.img` produces when pointed at a raw image instead of a
  * partition. Only short (8.3) names are understood -- long-filename
  * (VFAT LFN) entries are recognized and silently skipped during
- * directory scans, never partially misread as a short name.
+ * directory scans, and new entries are always written in 8.3 form
+ * (truncated to fit, never generating a proper LFN) -- so a name
+ * longer than 8.3 allows will round-trip lossily.
  *
- * Reading and writing EXISTING files both work (extend, overwrite,
- * append -- growth persists to the on-disk directory entry, not just
- * the in-memory vnode). Creating new files/directories and removing
- * entries do NOT yet -- those need free-directory-entry-slot
- * scanning, which is different enough (and risky enough to get
- * subtly wrong) that it's a deliberately separate next step once
- * write-to-existing-files is proven solid. So for now: whatever files
- * you want to read or modify need to already exist on the volume,
- * put there by host tooling (mkfs.fat + mtools) before boot. See
- * things.md's Tier 2 notes.
+ * Full read/write: existing files can be read and written (extend,
+ * overwrite, append), and new files/directories can be created and
+ * removed (rmdir refuses a non-empty directory, matching
+ * tmpfs_dir_unlink's own rule). All of it persists to the actual
+ * on-disk structures -- directory entries, FAT chains, both FAT
+ * copies -- not just the in-memory vnode, so it survives a reboot.
  *
  * Display names are lowercased on the way out of every directory
  * scan (FAT short names are conventionally stored upper-case) --

@@ -4,18 +4,18 @@
 - ~~Remove hardcoded buffer ceilings~~ — done, plus the tmpfs write-side cap that was the same bug in disguise. `vfs_read_file_alloc()` replaces `exec_buf`/`init_elf_buf` with a growing PMM-backed buffer (no ceiling); `tmpfs_file_write()` now grows a file's backing storage on demand instead of silently truncating past 64KiB.
 - ~~Copy-on-write `fork()`~~ — done. Added per-page refcounting to the PMM, a `PTE_COW` bit, and an actual page-fault handler in `exceptions.c` (there wasn't one before — every fault was fatal). `vmm_clone_lower_half()` now shares pages instead of deep-copying; a write triggers copy-or-reclaim in the fault handler.
 
-# Tier 1 — The stuff that makes it a real multi-tasking system, not a demo
+# Tier 1 — The stuff that makes it a real multi-tasking system, not a demo [DONE]
 
-- Signals — `SIGINT` (Ctrl-C), `SIGKILL`, `SIGTERM`, `SIGCHLD` at minimum. Without this, you can't kill a hung process from the shell or have the shell learn a child exited without polling `waitpid()` in a busy loop. This is probably the single biggest "feels like a toy" gap right now.
-- Job control — background (`&`), foreground, Ctrl-Z/suspend. Needs signals first.
+- ~~Signals — `SIGINT` (Ctrl-C), `SIGKILL`, `SIGTERM`, `SIGCHLD` at minimum~~ — done. Without this, you can't kill a hung process from the shell or have the shell learn a child exited without polling `waitpid()` in a busy loop. This is probably the single biggest "feels like a toy" gap right now.
+- ~~Job control — background (`&`), foreground, Ctrl-Z/suspend. Needs signals first~~ — done.
 - `mmap()` (even just anonymous) — heap growth beyond whatever fixed layout `exec()` currently sets up; `malloc()` in `mini_malloc.c` is presumably working off a fixed static arena right now, which caps every program's memory ceiling.
-- User/group + permissions — no uid/gid, no file mode bits, everything is one implicit identity. A Unix without permission enforcement doesn't feel like Unix even if it behaves like one when nobody's poking at it.
+- ~~User/group + permissions — no uid/gid, no file mode bits, everything is one implicit identity~~ — done. A Unix without permission enforcement doesn't feel like Unix even if it behaves like one when nobody's poking at it.
 
-# Tier 2 — Persistence and real I/O (the "actually usable" tier)
+# Tier 2 — Persistence and real I/O (the "actually usable" tier) [DONE]
 
-- A block device driver (AHCI/ATA) — currently zero disk I/O exists; everything is RAM-resident and boot-module-seeded.
-- A real filesystem on disk (FAT is the realistic first target) + a real `mount()` — right now `/dev` is a hack (ops-table swap on a `tmpfs` dir), not a real mount concept.
-- Persistence across reboot — nothing you do in the shell survives a reboot, since it's `tmpfs`-only. This is probably the most emotionally significant missing piece — "I edited a file and it's still there after rebooting" is when an OS stops feeling like a simulation.
+- ~~A block device driver (AHCI/ATA)~~ — done. Legacy ATA PIO, primary bus, master drive, LBA28, fully polled (no IRQ14 yet) — fixed ISA-compat ports (0x1F0-0x1F7/0x3F6), no PCI enumeration needed. `ata_init()`/`ata_present()`/`ata_sector_count()`/`ata_read_sectors()`/`ata_write_sectors()` in `kernel/ata.c`. Verified against real QEMU (`piix3-ide` + `ide-hd` on `-M q35`): IDENTIFY correctly reports a 16 MiB/32768-sector disk, and a write→read→byte-compare round-trip on sector 100 passes. `Makefile` grew a `disk.img` target (16 MiB, zero-filled, no prerequisites, never touched by `clean`) so persistence has something to persist to once the FAT layer lands.
+- ~~A real filesystem on disk (FAT is the realistic first target)~~ — done, full read/write. `kernel/fat.c`/`fat.h`: whole-disk FAT16 (no MBR/partition table, matches `mkfs.fat -F 16` on a raw image), short 8.3 names only (LFN entries recognized and skipped on read; new entries always written in 8.3, truncated to fit, no LFN generation). Mounted at `/mnt` via `fat_install()` — same "ops-swap on a tmpfs dir" trick `devfs_install()` uses for `/dev`, but routed through `vnode_t::priv` instead of a direct ops-swap: FAT's ops need real per-node state (cluster, size), and swapping ops directly onto a tmpfs-allocated vnode would mean casting a `tmpfs_node_t*` as a `fat_node_t*` — memory corruption devfs never risks, since its ops ignore the vnode entirely. Two-step build, on purpose: (1) read + write-to-existing-files first (`fat_alloc_cluster`, `fat_write_fat_entry` replicated across both FAT copies, `fat_writeback_dirent` so growth persists past the in-memory vnode), verified with an `mcopy`'d file readable/writable/growable and surviving reboot; (2) `fat_dir_create`/`mkdir`/`unlink` (`fat_find_free_dirent_slot` reuses deleted entries or the current end-of-dir terminator without needing to relocate it, since the slot after a terminator is always already zeroed) as a deliberately separate step once (1) was proven, exactly because step (1) alone surfaced a real bug worth catching in isolation — the shell's `>` redirect fakes `O_TRUNC` via `unlink()`+`create()`, both of which were still `NULL` at that point, so it silently no-op'd and left old trailing bytes behind. Confirmed fixed and end-to-end persistent: `echo "..." > /mnt/test.txt` correctly truncates, and the new content is still there after a full reboot. Still `/dev`'s underlying problem too, though — this is still an ops-swap trick, not a real `mount()` concept; that's still open.
+- ~~Persistence across reboot~~ — done, as of the FAT write support above. `echo ... > /mnt/<file>` survives a real QEMU restart, verified. Still scoped to `/mnt` only, not the whole root — `/bin`, `/tmp`, `/etc`, `/home` stay `tmpfs`/boot-module-seeded and reset every boot, which is fine (see the Tier 3 rootfs-refactor notes below, a separate concern from this).
 - A real console/tty layer — line discipline, canonical vs. raw mode, backspace/Ctrl-C handling at the terminal level rather than each program reimplementing it.
 
 # Tier 3 — Shell/userland maturity
@@ -59,11 +59,21 @@ Isunux.iso
 # Tier Beyond
 
 - Replace the blocky 8x16 font
-- Add tiling terminal manager for multi-tasking
-- Actual internet? ;3
+- Add tiling terminal manager for multi-tasking. This also means we gotta implement PTY, hwhwhwhw
+- Actual internet? ;3 -> Real talk: I actually read some book about network programming, maybe we'll borrow this from BSD derivatives, especially their TCP/IP thingy.
+- Desktop Environment/Window Manager? gonna be pain in ass... I don't even continue my Wayland compositor project (vocwm) :v
+- Let me know or just contribute!
 
 # So what's my plan?
 We gonna finish tier 0 to 2 first as it is the most fundamental part, then we're going to continue to the tier 3 where we're going to make our userland mature by also adopting Linux static-linked binary. Tier 4 and beyond will be just finishing I'd do in my free time later.
 
+## Why did I create Isunux?
+
+Let’s be real: reading the actual Linux kernel source is a nightmare if you just want to learn. You’re immediately hit with 30+ million lines of code, decades of legacy hardware hacks, dense macros, and enterprise abstractions. 
+
+Isunux exists to be an **actual readable reference**. Instead of making "just another hobbyist Unix-like" that runs custom toy apps, the goal is to build a clean, well-commented x86_64 kernel that targets the real Linux ABI. 
+
+Basically, it's a way to understand modern Linux plumbing and sys-calls without drowning in upstream bloat.
+ 
 ## Feedback
-I'd very gladly accept feedback! as I myself is learning here. I need this specific feedback about what should be the identity of Isunux that differ it from "just another hobbyist Unix-like" despite its initial goal as well documented, well commented, easy to learn, and easy reference for everyone.
+I'd very gladly accept feedback! as I myself is learning here.

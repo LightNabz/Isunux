@@ -176,8 +176,10 @@ void _start(void) {
             serial_print("[ok] FAT16 volume mounted at /mnt\n");
         }
     }
+    // I'll remove this one later (ts shi still good for debugging)
     serial_print("[ok] vfs initialized (tmpfs root, seeded /hello.txt)\n");
 
+    // forgot to remove this, too lazy
     serial_print("\n========================================\n");
     serial_print(" milestone 9, group a: real process table\n");
     serial_print(" + scheduler integration + fork()\n");

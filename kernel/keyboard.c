@@ -52,6 +52,12 @@ static const char upper_table[128] = {
 static int shift_held = 0;
 static int ctrl_held = 0;
 
+/* tty discipline state -- see keyboard.h's doc comments on
+ * tty_set_raw()/tty_set_echo() for the full reasoning. Global, not
+ * per-fd: one physical console, one foreground process at a time. */
+static int raw_mode = 0;    /* 0 = canonical (default), 1 = raw */
+static int echo_enabled = 1;
+
 /* the line currently being typed -- edited locally (backspace works
  * here) before ever becoming visible to a reader */
 #define EDIT_LINE_MAX 256
@@ -89,13 +95,13 @@ static void commit_char(char c) {
     if (c == '\b') {
         if (edit_len > 0) {
             edit_len--;
-            term_print("\b \b"); /* move back, blank the character, move back again */
+            if (echo_enabled) term_print("\b \b"); /* move back, blank the character, move back again */
         }
         return;
     }
 
     if (c == '\n') {
-        term_putc('\n'); /* echo the newline itself */
+        if (echo_enabled) term_putc('\n'); /* echo the newline itself */
         for (uint32_t i = 0; i < edit_len; i++) kbd_queue_push(edit_line[i]);
         kbd_queue_push('\n');
         edit_len = 0;
@@ -105,7 +111,7 @@ static void commit_char(char c) {
 
     if (edit_len < EDIT_LINE_MAX - 1) {
         edit_line[edit_len++] = c;
-        term_putc(c); /* echo what was typed -- "cooked mode" */
+        if (echo_enabled) term_putc(c); /* echo what was typed -- "cooked mode" */
     }
 }
 
@@ -149,7 +155,29 @@ void keyboard_handle_scancode(uint8_t sc) {
     char c = shift_held ? upper_table[code] : lower_table[code];
     if (c == 0) return; /* unmapped key (alt, F-keys, arrows, ...) */
 
+    if (raw_mode) {
+        /* no local editing at all -- not even backspace is special-
+         * cased here; it's just another byte (0x08) handed straight to
+         * whatever's reading, same as real termios raw mode. It's up to
+         * that reader to decide what backspace means to it (a text
+         * editor might move a cursor instead of deleting a character). */
+        kbd_queue_push(c);
+        if (echo_enabled) term_putc(c);
+        task_wake(&kbd_wait_chan); /* every keystroke can wake a reader in raw mode,
+                                     * not just a completed line like canonical mode */
+        return;
+    }
+
     commit_char(c);
+}
+
+void tty_set_raw(int enable) {
+    raw_mode = enable ? 1 : 0;
+    edit_len = 0; /* discard any partially-typed line -- see keyboard.h's doc comment */
+}
+
+void tty_set_echo(int enable) {
+    echo_enabled = enable ? 1 : 0;
 }
 
 long keyboard_read(void *buf, uint64_t count) {

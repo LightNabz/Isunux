@@ -5,6 +5,7 @@
 #include "fork.h"
 #include "exec.h"
 #include "vfs.h"
+#include "keyboard.h"
 
 static void sys_exit(int code) {
     serial_print("[syscall] exit(");
@@ -217,6 +218,16 @@ void syscall_handler(interrupt_frame_t *frame) {
         }
         case SYS_GETGID: {
             frame->rax = proc ? proc->gid : 0;
+            break;
+        }
+        case SYS_TTY_SET_RAW: {
+            tty_set_raw((int)frame->rdi);
+            frame->rax = 0;
+            break;
+        }
+        case SYS_TTY_SET_ECHO: {
+            tty_set_echo((int)frame->rdi);
+            frame->rax = 0;
             break;
         }
         case SYS_EXIT: {

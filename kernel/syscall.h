@@ -30,6 +30,8 @@
 #define SYS_SETGID  26
 #define SYS_GETUID  27
 #define SYS_GETGID  28
+#define SYS_TTY_SET_RAW  29
+#define SYS_TTY_SET_ECHO 30
 
 /* Real Linux prot/flags values, same "why invent our own" reasoning as
  * the signal numbers above. Only what our anonymous-only mmap()

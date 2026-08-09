@@ -159,6 +159,36 @@ static void fat_decode_83_name(const uint8_t *entry, char *out) {
     out[i] = '\0';
 }
 
+/* Inverse of fat_decode_83_name: converts a normal lowercase name
+ * ("hello.txt") into an 11-byte space-padded 8.3 field
+ * ("HELLO   TXT"). No long-filename generation -- a base longer than
+ * 8 characters or an extension longer than 3 is simply truncated to
+ * fit, the same short-names-only scope cut the read side already has
+ * for LFN entries (see fat.h's top comment). Doesn't validate against
+ * FAT's disallowed-character set either -- acceptable for names
+ * ISUNUX's own userland actually creates. out11 must have room for
+ * exactly 11 bytes (no terminator -- this is a fixed-width field). */
+static void fat_encode_83_name(const char *name, uint8_t *out11) {
+    for (int i = 0; i < 11; i++) out11[i] = ' ';
+
+    int i = 0, b = 0;
+    for (; name[i] && name[i] != '.' && b < 8; i++, b++) {
+        char c = name[i];
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        out11[b] = (uint8_t)c;
+    }
+    while (name[i] && name[i] != '.') i++; /* skip any base chars we truncated past */
+    if (name[i] == '.') {
+        i++;
+        int e = 0;
+        for (; name[i] && e < 3; i++, e++) {
+            char c = name[i];
+            if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+            out11[8 + e] = (uint8_t)c;
+        }
+    }
+}
+
 /* visitor return: 1 = stop iterating (found what you wanted), 0 = keep going.
  * real_index counts only entries the visitor actually got called for
  * (deleted/LFN/volume-label entries are skipped before it's ever
@@ -363,10 +393,9 @@ static int fat_file_stat(vnode_t *node, uint64_t *size_out) {
 }
 
 /* ---- write support: extending/overwriting files that already exist
- * on disk. Deliberately does NOT include create()/mkdir()/unlink() --
- * those need free-directory-entry-slot scanning, which is different
- * enough (and risky enough to get subtly wrong) that it's a separate
- * step once this one's proven solid. See things.md's Tier 2 notes. ---- */
+ * on disk. create()/mkdir()/unlink() -- free-directory-entry-slot
+ * scanning, cluster chain freeing -- are further down, past the
+ * file/dir ops tables; see fat_find_free_dirent_slot's doc comment. ---- */
 
 /* Writes `value` into cluster `cluster`'s FAT table entry, replicated
  * across every FAT copy (mkfs.fat defaults to 2) -- unlike reading
@@ -527,9 +556,8 @@ static long fat_file_write(vnode_t *node, const void *buf, uint64_t count, uint6
 
 static vnode_ops_t fat_file_ops = {
     .read = fat_file_read,
-    .write = fat_file_write, /* extends/overwrites existing files -- no create()/mkdir()/unlink()
-                               * yet, see the comment above fat_write_fat_entry for why those are
-                               * a deliberately separate next step */
+    .write = fat_file_write, /* extends/overwrites existing files -- see fat_dir_create/mkdir/unlink
+                               * below for the files/directories those files actually live in */
     .lookup = NULL,
     .readdir = NULL,
     .mkdir = NULL,
@@ -538,14 +566,237 @@ static vnode_ops_t fat_file_ops = {
     .stat = fat_file_stat,
 };
 
+/* ---- create / mkdir / unlink ---- */
+
+/* Finds a place to write a new 32-byte dirent into `dir_vnode` --
+ * either a reusable deleted (0xE5) slot, or the current end-of-
+ * directory terminator's (0x00) position. Overwriting a terminator
+ * slot is safe without any extra bookkeeping: the slot right after it
+ * is guaranteed to still be zeroed -- either from mkfs.fat's own
+ * formatting of the root region, or from this function's own
+ * zero-fill of any cluster it allocates below -- so it stays a valid
+ * implicit terminator with nothing more to write.
+ *
+ * If the directory is completely full (no deleted slot, no
+ * terminator anywhere in its currently allocated space): the root
+ * can't grow (fixed size), so that's -1, a real FAT16 limitation. A
+ * subdirectory CAN grow -- this allocates and zero-fills a fresh
+ * cluster onto the end of its chain and uses that cluster's first
+ * slot instead.
+ *
+ * Returns 0 and fills *out_lba / *out_offset on success, -1 on failure
+ * (root full, disk full, or an I/O error partway through). */
+static int fat_find_free_dirent_slot(vnode_t *dir_vnode, uint32_t *out_lba, uint32_t *out_offset) {
+    fat_meta_t *meta = (fat_meta_t *)dir_vnode->priv;
+    uint8_t sector[512];
+
+    if (meta->first_cluster == 0) {
+        for (uint32_t s = 0; s < root_dir_sectors; s++) {
+            uint32_t lba = first_root_dir_sector + s;
+            if (ata_read_sectors(lba, 1, sector) != 0) return -1;
+            for (int off = 0; off < 512; off += 32) {
+                uint8_t first = sector[off];
+                if (first == 0xE5 || first == 0x00) {
+                    *out_lba = lba;
+                    *out_offset = (uint32_t)off;
+                    return 0;
+                }
+            }
+        }
+        return -1; /* root directory completely full -- real FAT16 limitation, can't grow it */
+    }
+
+    uint32_t cluster = meta->first_cluster;
+    uint32_t last_cluster = cluster;
+    while (cluster >= 2 && cluster < FAT16_EOC_MIN) {
+        last_cluster = cluster;
+        uint32_t cluster_lba = cluster_to_lba(cluster);
+        for (uint8_t s = 0; s < sectors_per_cluster; s++) {
+            uint32_t lba = cluster_lba + s;
+            if (ata_read_sectors(lba, 1, sector) != 0) return -1;
+            for (int off = 0; off < 512; off += 32) {
+                uint8_t first = sector[off];
+                if (first == 0xE5 || first == 0x00) {
+                    *out_lba = lba;
+                    *out_offset = (uint32_t)off;
+                    return 0;
+                }
+            }
+        }
+        cluster = fat_next_cluster(cluster);
+    }
+
+    /* ran completely out of allocated space -- extend the chain with a
+     * fresh, zero-filled cluster and use its first slot */
+    uint32_t new_cluster = fat_alloc_cluster();
+    if (new_cluster == 0) return -1; /* disk full */
+    fat_write_fat_entry(last_cluster, new_cluster);
+
+    uint8_t zero_sector[512];
+    k_memset(zero_sector, 0, sizeof(zero_sector));
+    uint32_t new_cluster_lba = cluster_to_lba(new_cluster);
+    for (uint8_t s = 0; s < sectors_per_cluster; s++) {
+        if (ata_write_sectors(new_cluster_lba + s, 1, zero_sector) != 0) return -1;
+    }
+
+    *out_lba = new_cluster_lba;
+    *out_offset = 0;
+    return 0;
+}
+
+static int fat_dir_create(vnode_t *dir, const char *name) {
+    if (fat_dir_lookup(dir, name)) return -1; /* already exists */
+
+    uint32_t lba, offset;
+    if (fat_find_free_dirent_slot(dir, &lba, &offset) != 0) return -1;
+
+    uint8_t sector[512];
+    if (ata_read_sectors(lba, 1, sector) != 0) return -1;
+
+    uint8_t *entry = sector + offset;
+    k_memset(entry, 0, 32);
+    fat_encode_83_name(name, entry); /* fills the first 11 bytes */
+    entry[11] = FAT_ATTR_ARCHIVE; /* real DOS convention for a freshly created file -- nothing
+                                    * here actually reads this bit back, just matches what a
+                                    * real FAT write would set */
+    /* cluster (bytes 26-27) and size (28-31) stay 0 -- a brand new,
+     * empty file; fat_file_write() gives it its first cluster on the
+     * first byte actually written, same as any other empty file (see
+     * fat_meta_t's doc comment). time/date fields (12-25) stay 0 too --
+     * no RTC/clock subsystem exists yet (things.md's Tier 5), so
+     * there's nothing real to put there. */
+
+    return ata_write_sectors(lba, 1, sector) == 0 ? 0 : -1;
+}
+
+static int fat_dir_mkdir(vnode_t *dir, const char *name) {
+    if (fat_dir_lookup(dir, name)) return -1; /* already exists */
+
+    /* Unlike a file, a subdirectory can never be left at
+     * first_cluster == 0 -- that's the ROOT sentinel (see
+     * fat_meta_t's doc comment), and fat_iterate_dir would
+     * misinterpret an empty new subdirectory as "the root" and read
+     * the wrong sector range entirely. So mkdir always eagerly
+     * allocates a first cluster, unlike create(). */
+    uint32_t new_cluster = fat_alloc_cluster();
+    if (new_cluster == 0) return -1; /* disk full */
+
+    uint8_t zero_sector[512];
+    k_memset(zero_sector, 0, sizeof(zero_sector));
+    uint32_t new_cluster_lba = cluster_to_lba(new_cluster);
+    for (uint8_t s = 0; s < sectors_per_cluster; s++) {
+        if (ata_write_sectors(new_cluster_lba + s, 1, zero_sector) != 0) return -1;
+    }
+
+    /* "." (self) and ".." (parent) into the fresh cluster's first two
+     * slots -- real FAT convention. ISUNUX's own traversal doesn't
+     * actually need these (vfs_resolve_path handles "."/".." generically
+     * via vnode->parent before ever calling lookup()), but writing them
+     * is still correct FAT hygiene for any other tool reading this disk. */
+    fat_meta_t *parent_meta = (fat_meta_t *)dir->priv;
+    uint8_t sector[512];
+    if (ata_read_sectors(new_cluster_lba, 1, sector) != 0) return -1;
+
+    uint8_t *dot = sector + 0;
+    k_memset(dot, ' ', 11);
+    dot[0] = '.';
+    dot[11] = FAT_ATTR_DIRECTORY;
+    dot[26] = (uint8_t)(new_cluster & 0xFF);
+    dot[27] = (uint8_t)((new_cluster >> 8) & 0xFF);
+
+    uint8_t *dotdot = sector + 32;
+    k_memset(dotdot, ' ', 11);
+    dotdot[0] = '.';
+    dotdot[1] = '.';
+    dotdot[11] = FAT_ATTR_DIRECTORY;
+    /* 0 if parent is root -- matches real FAT16's own convention for
+     * ".." pointing to root, and happens to be exactly our root
+     * sentinel value too, so no special-casing is needed here at all */
+    dotdot[26] = (uint8_t)(parent_meta->first_cluster & 0xFF);
+    dotdot[27] = (uint8_t)((parent_meta->first_cluster >> 8) & 0xFF);
+
+    if (ata_write_sectors(new_cluster_lba, 1, sector) != 0) return -1;
+
+    /* now the new subdirectory's own dirent, in the PARENT. Note: if
+     * this step fails (e.g. parent is a completely full root), the
+     * cluster already claimed above for the new dir's own contents is
+     * leaked -- a real implementation would roll that back. Accepted
+     * as a rare-edge-case scope cut here rather than adding transaction
+     * rollback machinery for it. */
+    uint32_t lba, offset;
+    if (fat_find_free_dirent_slot(dir, &lba, &offset) != 0) return -1;
+
+    uint8_t parent_sector[512];
+    if (ata_read_sectors(lba, 1, parent_sector) != 0) return -1;
+    uint8_t *entry = parent_sector + offset;
+    k_memset(entry, 0, 32);
+    fat_encode_83_name(name, entry);
+    entry[11] = FAT_ATTR_DIRECTORY;
+    entry[26] = (uint8_t)(new_cluster & 0xFF);
+    entry[27] = (uint8_t)((new_cluster >> 8) & 0xFF);
+    /* size stays 0 -- FAT directories don't track a meaningful size */
+
+    return ata_write_sectors(lba, 1, parent_sector) == 0 ? 0 : -1;
+}
+
+typedef struct {
+    int *only_dots;
+} fat_dot_check_ctx_t;
+
+static int fat_dot_check_visitor(const char *display_name, const uint8_t *raw_entry, int real_index,
+                                  uint32_t entry_lba, uint32_t entry_offset, void *ctx_) {
+    (void)raw_entry;
+    (void)real_index;
+    (void)entry_lba;
+    (void)entry_offset;
+    fat_dot_check_ctx_t *ctx = (fat_dot_check_ctx_t *)ctx_;
+    if (k_strcmp(display_name, ".") != 0 && k_strcmp(display_name, "..") != 0) {
+        *ctx->only_dots = 0;
+        return 1; /* stop -- found a real entry, that's enough to know it's not empty */
+    }
+    return 0;
+}
+
+/* Combines unlink()+rmdir() into one op, same as tmpfs_dir_unlink
+ * (see vfs.h's doc comment on vnode_ops::unlink) -- works on files and
+ * on EMPTY directories, refusing a non-empty one exactly like
+ * tmpfs_dir_unlink already does. */
+static int fat_dir_unlink(vnode_t *dir, const char *name) {
+    vnode_t *target = fat_dir_lookup(dir, name);
+    if (!target) return -1; /* no such entry */
+
+    if (target->type == VNODE_DIR) {
+        int only_dots = 1;
+        fat_dot_check_ctx_t ctx = { .only_dots = &only_dots };
+        fat_iterate_dir(target, fat_dot_check_visitor, &ctx);
+        if (!only_dots) return -1; /* not empty */
+    }
+
+    fat_meta_t *meta = (fat_meta_t *)target->priv;
+
+    /* free the whole cluster chain back to the FAT */
+    uint32_t cluster = meta->first_cluster;
+    while (cluster >= 2 && cluster < FAT16_EOC_MIN) {
+        uint32_t next = fat_next_cluster(cluster);
+        fat_write_fat_entry(cluster, 0x0000);
+        cluster = next;
+    }
+
+    /* mark the dirent itself deleted */
+    uint8_t sector[512];
+    if (ata_read_sectors(meta->dirent_lba, 1, sector) != 0) return -1;
+    sector[meta->dirent_offset] = 0xE5;
+    return ata_write_sectors(meta->dirent_lba, 1, sector) == 0 ? 0 : -1;
+}
+
 static vnode_ops_t fat_dir_ops = {
     .read = NULL,
     .write = NULL,
     .lookup = fat_dir_lookup,
     .readdir = fat_dir_readdir,
-    .mkdir = NULL,
-    .create = NULL,
-    .unlink = NULL,
+    .mkdir = fat_dir_mkdir,
+    .create = fat_dir_create,
+    .unlink = fat_dir_unlink,
     .stat = NULL, /* dirs report size 0 via the generic fallback, same as tmpfs/devfs dirs */
 };
 
