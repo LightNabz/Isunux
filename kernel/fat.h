@@ -2,17 +2,23 @@
 #include <stdint.h>
 #include "vfs.h"
 
-/* Read-only FAT16, whole-disk (no MBR/partition table -- the FAT
- * boot sector is assumed to sit at LBA 0 directly), exactly what
- * `mkfs.fat -F 16 disk.img` produces when pointed at a raw image
- * instead of a partition. Only short (8.3) names are understood --
- * long-filename (VFAT LFN) entries are recognized and silently
- * skipped during directory scans, never partially misread as a short
- * name. Deliberately read-only: this is the first cut, meant to prove
- * the block driver + parser against a filesystem built and populated
- * by host tooling (mkfs.fat + mtools) before write support --
- * allocation, free-cluster tracking, directory-entry writeback --
- * enters the picture at all. See things.md's Tier 2 notes.
+/* FAT16, whole-disk (no MBR/partition table -- the FAT boot sector is
+ * assumed to sit at LBA 0 directly), exactly what `mkfs.fat -F 16
+ * disk.img` produces when pointed at a raw image instead of a
+ * partition. Only short (8.3) names are understood -- long-filename
+ * (VFAT LFN) entries are recognized and silently skipped during
+ * directory scans, never partially misread as a short name.
+ *
+ * Reading and writing EXISTING files both work (extend, overwrite,
+ * append -- growth persists to the on-disk directory entry, not just
+ * the in-memory vnode). Creating new files/directories and removing
+ * entries do NOT yet -- those need free-directory-entry-slot
+ * scanning, which is different enough (and risky enough to get
+ * subtly wrong) that it's a deliberately separate next step once
+ * write-to-existing-files is proven solid. So for now: whatever files
+ * you want to read or modify need to already exist on the volume,
+ * put there by host tooling (mkfs.fat + mtools) before boot. See
+ * things.md's Tier 2 notes.
  *
  * Display names are lowercased on the way out of every directory
  * scan (FAT short names are conventionally stored upper-case) --
