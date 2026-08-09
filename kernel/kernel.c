@@ -20,6 +20,7 @@
 #include "userstack.h"
 #include "fb.h"
 #include "ata.h"
+#include "fat.h"
 
 __attribute__((used, section(".requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -110,18 +111,25 @@ void _start(void) {
     serial_print("\n[ok] pmm + vmm initialized, cr3 on our own kernel tables\n");
 
     ata_init();
-    if (ata_present()) {
-        /* Round-trip smoke test: write a recognizable pattern to a
-         * sector, read it back into a separate buffer, and compare --
-         * this actually exercises both directions plus the write
-         * path's cache-flush, unlike a bare read (which could
-         * "succeed" against total garbage and look fine). Sector 100
-         * is arbitrary but deliberately NOT sector 0 -- once the FAT
-         * layer lands, sector 0 becomes the boot sector/BPB, and
-         * scribbling test data there would be actively harmful to
-         * keep around. This whole block is throwaway scaffolding for
-         * this milestone only; it goes away once FAT has its own
-         * tests to exercise the driver instead. */
+    int fat_ok = ata_present() && (fat_mount() == 0); /* fat_mount() only ever reads (boot sector +
+                                                          * BPB fields), so it's always safe to try
+                                                          * regardless of what's on the disk */
+
+    if (ata_present() && !fat_ok) {
+        /* No valid FAT volume found -- either a blank/unformatted disk
+         * or something this driver doesn't understand. Either way,
+         * there's no real filesystem data here to lose, so this is the
+         * one safe moment to run a destructive round-trip self-test:
+         * write a recognizable pattern to a sector, read it back into a
+         * separate buffer, and compare -- exercises both directions
+         * plus the write path's cache-flush, unlike a bare read (which
+         * could "succeed" against total garbage and look fine). Once a
+         * real FAT volume IS present, this block is skipped entirely --
+         * scribbling test data into what could be real file content
+         * would be actively harmful, and a successful FAT mount above
+         * already proves ATA reads work anyway. Sector 100 is arbitrary
+         * but deliberately not sector 0 (the boot sector every future
+         * fat_mount() attempt reads first). */
         #define ATA_SELFTEST_LBA 100
         uint8_t write_buf[512];
         uint8_t read_buf[512];
@@ -153,11 +161,21 @@ void _start(void) {
             serial_print(") -- continuing boot anyway, nothing depends on disk yet\n");
         }
         #undef ATA_SELFTEST_LBA
+    } else if (fat_ok) {
+        serial_print("[ata] valid FAT volume present -- skipping destructive write self-test (a successful FAT mount already proves reads work, and writing test data here could corrupt real files)\n");
     } else {
         serial_print("[ata] no disk attached this boot -- fine for now, nothing depends on it yet\n");
     }
 
     vfs_init((struct limine_module_response *)module_request.response);
+
+    if (fat_ok) {
+        vnode_t *mnt_vnode = vfs_resolve_path("/mnt");
+        if (mnt_vnode) {
+            fat_install(mnt_vnode);
+            serial_print("[ok] FAT16 volume mounted at /mnt\n");
+        }
+    }
     serial_print("[ok] vfs initialized (tmpfs root, seeded /hello.txt)\n");
 
     serial_print("\n========================================\n");

@@ -54,6 +54,10 @@ void vfs_init(struct limine_module_response *modules) {
     tmpfs_create_dir((tmpfs_node_t *)root_vnode, "tmp");
     tmpfs_create_dir((tmpfs_node_t *)root_vnode, "etc");
     tmpfs_create_dir((tmpfs_node_t *)root_vnode, "home");
+    tmpfs_create_dir((tmpfs_node_t *)root_vnode, "mnt"); /* FAT gets ops-swapped onto this in
+                                                           * kernel.c, same trick devfs_install()
+                                                           * uses for /dev -- see fat_install()'s
+                                                           * doc comment in fat.h */
 
     /* /dev is still an ordinary tmpfs directory as far as the tree is
      * concerned (that's what makes "/dev" resolvable at all, and what

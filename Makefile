@@ -58,7 +58,7 @@ USER_LDFLAGS := -nostdlib \
 	-m elf_x86_64 \
 	-T lib/user_link.ld
 
-C_SRCS := kernel/kernel.c kernel/serial.c kernel/term.c kernel/fb.c kernel/gdt.c kernel/idt.c kernel/exceptions.c kernel/pic.c kernel/pit.c kernel/irq.c kernel/pmm.c kernel/vmm.c kernel/task.c kernel/tss.c kernel/syscall.c kernel/vfs.c kernel/tmpfs.c kernel/devfs.c kernel/pipe.c kernel/process.c kernel/elf.c kernel/userstack.c kernel/fork.c kernel/exec.c kernel/keyboard.c kernel/ata.c
+C_SRCS := kernel/kernel.c kernel/serial.c kernel/term.c kernel/fb.c kernel/gdt.c kernel/idt.c kernel/exceptions.c kernel/pic.c kernel/pit.c kernel/irq.c kernel/pmm.c kernel/vmm.c kernel/task.c kernel/tss.c kernel/syscall.c kernel/vfs.c kernel/tmpfs.c kernel/devfs.c kernel/pipe.c kernel/process.c kernel/elf.c kernel/userstack.c kernel/fork.c kernel/exec.c kernel/keyboard.c kernel/ata.c kernel/fat.c
 ASM_SRCS := kernel/isr.asm kernel/switch.asm kernel/usermode.asm
 OBJS := $(C_SRCS:.c=.o) $(ASM_SRCS:.asm=.o)
 
