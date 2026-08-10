@@ -22,7 +22,8 @@ _start:
     mov edi, eax                  ; exit code = main's return value
                                    ; (writing edi zero-extends into rdi)
     mov rax, 1                    ; SYS_EXIT
-    int 0x80
+    syscall                       ; clobbers rcx/r11 (return addr/flags) --
+                                   ; irrelevant here, we never return
 
 .hang:                            ; unreachable -- sys_exit never returns
     jmp .hang

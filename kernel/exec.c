@@ -108,9 +108,10 @@ int64_t do_exec(interrupt_frame_t *frame, const char *path, char **user_argv) {
      * full address space, not just a process that never gets reaped. */
     vmm_destroy_address_space(old_pml4);
 
-    /* overwrite the CURRENT trap frame in place -- isr128's normal
-     * epilogue (pop registers, iretq) runs right after syscall_handler
-     * returns regardless, so this is the entire mechanism. General
+    /* overwrite the CURRENT trap frame in place -- syscall_entry's
+     * normal epilogue (pop registers, sysretq) runs right after
+     * syscall_handler returns regardless, so this is the entire
+     * mechanism. General
      * registers zeroed for cleanliness, matching how a freshly started
      * process shouldn't see leftover values from whatever used to be
      * running in this memory. */

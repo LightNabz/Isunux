@@ -80,13 +80,12 @@
 #define ENCODE_SIGNALED(sig)   ((sig) & 0x7f)
 #define ENCODE_STOPPED(sig)    ((((sig) & 0xff) << 8) | 0x7f)
 
-/* Called from isr128 (isr.asm) with a pointer to the saved register
- * frame. Syscall number comes in via rax, arguments via rdi/rsi/rdx
- * (our own convention -- loosely mirrors the real x86_64 `syscall` ABI
- * since that's a reasonable, well-trodden layout to imitate, even
- * though we're entering via `int 0x80` rather than `syscall` for now).
+/* Called from syscall_entry (isr.asm) with a pointer to the saved
+ * register frame. Syscall number comes in via rax, arguments via
+ * rdi/rsi/rdx (widening to the full 6-register x86_64 `syscall` ABI --
+ * rdi/rsi/rdx/r10/r8/r9 -- is still pending, next up after this).
  * The return value is written straight into frame->rax, which is the
- * same memory the isr128 epilogue pops back into the real rax register
- * on the way out -- so writing frame->rax IS setting the syscall's
- * return value. */
+ * same memory syscall_entry's epilogue pops back into the real rax
+ * register on the way out -- so writing frame->rax IS setting the
+ * syscall's return value. */
 void syscall_handler(interrupt_frame_t *frame);

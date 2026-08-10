@@ -159,24 +159,53 @@ IRQ_STUB 45
 IRQ_STUB 46
 IRQ_STUB 47
 
-; ---- syscall gate, vector 0x80 (128), triggered by `int 0x80` from ring 3 ----
-; Entered from ring 3, so the CPU pushes 5 values (SS/RSP/RFLAGS/CS/RIP)
-; instead of the 3 that every other stub above assumes -- but iretq
-; figures out how many to pop again by looking at the CS value it's
-; about to restore, so the exact same push-regs/call/pop-regs/iretq
-; shape works completely unmodified. Routed to a different C function
-; (syscall_handler, not exception_handler) purely to keep the two
-; concerns separate.
+; ---- SYSCALL/SYSRET entry point ----
+; Reached directly via IA32_LSTAR (set in gdt.c's syscall_init()), NOT
+; through the IDT -- there's no vector, no idt_set_gate() call for this
+; anywhere. SYSCALL hands us:
+;   rcx = return RIP (the instruction after `syscall` in userland)
+;   r11 = the user's RFLAGS at the moment of the call
+;   rsp = still the USER stack -- unlike an interrupt gate, SYSCALL
+;         does not switch stacks or push anything for us
+; CS/SS are already fixed to the kernel selectors by hardware (from
+; STAR), so it's safe to touch memory immediately -- just not the
+; user's stack.
+;
+; Single-core means there's exactly one "current task's kernel stack"
+; at any moment, and tss_set_kernel_stack() (task.c, every context
+; switch) already keeps kernel_tss.rsp0 pointing at it -- the same
+; field a real interrupt gate auto-loads from on ring3->0. Reading it
+; directly here is what a multi-core kernel would need swapgs and a
+; per-CPU scratch slot for; being single-core means a plain global
+; works instead. Offset 4 is tss_t's layout (tss.h): a 4-byte
+; reserved0 immediately followed by rsp0.
 
 extern syscall_handler
+extern kernel_tss
 
-global isr128
-isr128:
-    push 0    ; dummy error code -- int 0x80 never carries one
-    push 128  ; vector number
-    jmp syscall_common
+section .bss
+syscall_scratch_user_rsp: resq 1
 
-syscall_common:
+section .text
+global syscall_entry
+syscall_entry:
+    mov [syscall_scratch_user_rsp], rsp
+    mov rsp, [kernel_tss + 4]      ; kernel_tss.rsp0 -- this task's kernel stack top
+
+    ; Manually rebuild the [rip,cs,rflags,rsp,ss] tail that an
+    ; interrupt gate gets from hardware for free, in the exact same
+    ; push order (and therefore the exact same interrupt_frame_t
+    ; layout, idt.h) the old int-0x80 path relied on -- so fork.c's
+    ; frame-copying trick needs no changes at all.
+    push 0x23                          ; ss  = GDT_USER_DATA
+    push qword [syscall_scratch_user_rsp] ; rsp = the user stack we just stashed
+    push r11                           ; rflags -- SYSCALL put them here
+    push 0x2b                          ; cs  = GDT_USER_CODE
+    push rcx                           ; rip -- SYSCALL put the return address here
+
+    push 0    ; dummy error code, same frame shape as every other stub
+    push 128  ; purely informational now (no vector 128 exists anymore) -- nothing dispatches on this, syscall_handler reads frame->rax instead
+
     push rax
     push rbx
     push rcx
@@ -221,7 +250,20 @@ syscall_return_point:
     pop rbx
     pop rax
 
-    add rsp, 16
-    iretq
+    add rsp, 16 ; drop vector number + error code
+
+    ; What's left on the stack is [rip,cs,rflags,rsp,ss], same order an
+    ; iretq would consume -- except sysretq takes its return state from
+    ; registers, not the stack, so pull each piece off by hand instead.
+    pop rcx        ; rip    -> sysretq reads the return address from rcx
+    add rsp, 8     ; cs     -> discarded; sysretq fixes CS from STAR, not the stack
+    pop r11        ; rflags -> sysretq reads flags from r11
+    pop rsp        ; rsp    -> restore the real user stack pointer -- safe to clobber rsp now, this is the last thing we need off the kernel stack
+    ; the pushed ss value is simply abandoned on the old kernel stack --
+    ; sysretq fixes SS from STAR too, the same way SYSCALL fixed it
+    ; going in, so it was only ever here to keep the frame shape intact
+    ; for fork.c, never actually consumed on the way out.
+
+    o64 sysret
 
 section .note.GNU-stack noalloc noexec nowrite progbits

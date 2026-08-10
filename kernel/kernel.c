@@ -91,9 +91,10 @@ void _start(void) {
     gdt_init();
     pic_remap();
     idt_init();
+    syscall_init();
     pit_init(100);
     asm volatile ("sti");
-    serial_print("[ok] gdt/idt/pic/pit up, interrupts enabled (user segments + tss from milestone 6)\n");
+    serial_print("[ok] gdt/idt/pic/pit up, interrupts enabled, syscall/sysret entry live\n");
 
     if (memmap_request.response == NULL || hhdm_request.response == NULL ||
         kaddr_request.response == NULL) {

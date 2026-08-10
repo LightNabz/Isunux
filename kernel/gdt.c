@@ -20,9 +20,10 @@ typedef struct __attribute__((packed)) {
     uint32_t reserved;
 } tss_descriptor_t;
 
-/* 7 qword-sized slots: null, kernel code, kernel data, user data, user
- * code, then the 16-byte TSS descriptor spans the last two slots. */
-static uint64_t gdt[7];
+/* 8 qword-sized slots: null, kernel code, kernel data, an unused user
+ * code slot (placeholder -- see gdt.h), user data, user code, then the
+ * 16-byte TSS descriptor spans the last two slots. */
+static uint64_t gdt[8];
 static gdt_ptr_t gdt_ptr;
 
 /* Same bit positions as milestone 1/2, plus DPL now actually used:
@@ -48,7 +49,7 @@ static void set_tss_descriptor(uint64_t base, uint32_t limit) {
     desc.base_upper = (uint32_t)(base >> 32);
     desc.reserved = 0;
 
-    tss_descriptor_t *slot = (tss_descriptor_t *)&gdt[5];
+    tss_descriptor_t *slot = (tss_descriptor_t *)&gdt[6];
     *slot = desc;
 }
 
@@ -56,8 +57,15 @@ void gdt_init(void) {
     gdt[0] = 0;
     gdt[1] = GDT_PRESENT | GDT_NOTSYS | GDT_EXEC | GDT_RW | GDT_LONGMODE;            /* 0x08 kernel code */
     gdt[2] = GDT_PRESENT | GDT_NOTSYS | GDT_RW;                                     /* 0x10 kernel data */
-    gdt[3] = GDT_PRESENT | GDT_NOTSYS | GDT_RW | GDT_DPL3;                          /* 0x18 user data   */
-    gdt[4] = GDT_PRESENT | GDT_NOTSYS | GDT_EXEC | GDT_RW | GDT_LONGMODE | GDT_DPL3; /* 0x20 user code   */
+    /* 0x18 -- placeholder only. SYSRET derives SS from (STAR[63:48]+8)
+     * and CS from (STAR[63:48]+16), so it needs a slot to sit AT
+     * STAR[63:48] even though nothing ever loads a segment register
+     * from it. Not marked GDT_LONGMODE since it's standing in for a
+     * legacy 32-bit code segment -- doesn't matter in practice since
+     * it's never executed, but matches what it's pretending to be. */
+    gdt[3] = GDT_PRESENT | GDT_NOTSYS | GDT_EXEC | GDT_RW | GDT_DPL3;                /* 0x18 user32 code (unused) */
+    gdt[4] = GDT_PRESENT | GDT_NOTSYS | GDT_RW | GDT_DPL3;                          /* 0x20 user data   */
+    gdt[5] = GDT_PRESENT | GDT_NOTSYS | GDT_EXEC | GDT_RW | GDT_LONGMODE | GDT_DPL3; /* 0x28 user code   */
 
     tss_init();
     set_tss_descriptor((uint64_t)&kernel_tss, sizeof(tss_t) - 1);
@@ -78,10 +86,59 @@ void gdt_init(void) {
         "mov %%ax, %%fs\n"
         "mov %%ax, %%gs\n"
         "mov %%ax, %%ss\n"
-        "mov $0x28, %%ax\n"
+        "mov $0x30, %%ax\n"
         "ltr %%ax\n"
         :
         : "m"(gdt_ptr)
         : "rax", "memory"
     );
+}
+
+#define MSR_EFER   0xC0000080
+#define MSR_STAR   0xC0000081
+#define MSR_LSTAR  0xC0000082
+#define MSR_FMASK  0xC0000084
+#define EFER_SCE   (1ULL << 0) /* SYSCALL/SYSRET enable */
+
+static inline uint64_t rdmsr(uint32_t msr) {
+    uint32_t lo, hi;
+    asm volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static inline void wrmsr(uint32_t msr, uint64_t value) {
+    asm volatile ("wrmsr" : : "c"(msr), "a"((uint32_t)value), "d"((uint32_t)(value >> 32)));
+}
+
+/* isr.asm's SYSCALL entry point -- IA32_LSTAR points straight at it,
+ * completely bypassing the IDT (this is not an interrupt gate, there's
+ * no vector, no idt_set_gate() call for this anywhere). */
+extern void syscall_entry(void);
+
+/* Must run after gdt_init() -- STAR encodes the exact selector values
+ * gdt_init() just built, and gets it wrong silently (no fault at setup
+ * time) if the GDT isn't in its final shape yet. */
+void syscall_init(void) {
+    uint64_t efer = rdmsr(MSR_EFER);
+    wrmsr(MSR_EFER, efer | EFER_SCE); /* Limine leaves us in long mode already, but SCE is a separate bit it doesn't set for us */
+
+    /* STAR[47:32]: SYSCALL loads this into CS, and this+8 into SS --
+     * kernel code/data are adjacent for exactly this reason.
+     * STAR[63:48]: SYSRET's base selector -- see GDT_USER32_CODE's
+     * comment in gdt.c for why 0x18 (not the user data/code selectors
+     * themselves) is the right value here. */
+    uint64_t star = ((uint64_t)GDT_USER32_CODE << 48) | ((uint64_t)GDT_KERNEL_CODE << 32);
+    wrmsr(MSR_STAR, star);
+
+    wrmsr(MSR_LSTAR, (uint64_t)syscall_entry);
+
+    /* Bits set here are CLEARED in RFLAGS the instant SYSCALL fires,
+     * before syscall_entry's first instruction runs. Clearing IF (bit
+     * 9) is what keeps an IRQ from landing mid-transition, before the
+     * stack switch in syscall_entry is complete -- exactly what a
+     * 0x8E interrupt gate already did automatically for `int 0x80`,
+     * so this isn't a new behavior, just the SYSCALL-path equivalent.
+     * TF (bit 8) cleared too, so a stray user-mode single-step flag
+     * can't trip anything on the way in. */
+    wrmsr(MSR_FMASK, 0x300);
 }

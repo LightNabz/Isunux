@@ -4,8 +4,8 @@
 /* Implements execve(): loads a fresh ELF from the VFS, builds a
  * brand-new address space + stack for it, and overwrites the calling
  * task's *current* trap frame (rip/rsp/registers) so that when
- * isr128's normal epilogue runs, it iretq's straight into the new
- * program instead of back into the old one. No new resume mechanism
+ * syscall_entry's normal epilogue runs, it sysretq's straight into the
+ * new program instead of back into the old one. No new resume mechanism
  * needed -- same trap, same task, just a different destination.
  *
  * Only returns (with -1) on failure, exactly like real execve(). On

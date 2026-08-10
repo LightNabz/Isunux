@@ -82,30 +82,36 @@ typedef struct {
 #define VFS_PERM_EXEC  0x1
 
 /* Same convention as the kernel's syscall_handler expects: syscall
- * number in rax, args in rdi/rsi/rdx, triggered via `int 0x80`. */
+ * number in rax, args in rdi/rsi/rdx, triggered via the real x86_64
+ * `syscall` instruction (kernel/isr.asm's syscall_entry). `syscall`
+ * itself clobbers rcx (loaded with the return address) and r11
+ * (loaded with RFLAGS) as a hardware side effect -- both need to be in
+ * the clobber list so the compiler doesn't keep anything live there
+ * across the call, same as real libc's syscall wrapper does. */
 static inline long syscall3(long num, long a1, long a2, long a3) {
     long ret;
     asm volatile (
-        "int $0x80"
+        "syscall"
         : "=a"(ret)
         : "a"(num), "D"(a1), "S"(a2), "d"(a3)
-        : "memory"
+        : "rcx", "r11", "memory"
     );
     return ret;
 }
 
-/* Same as syscall3, plus a 4th arg passed in r10 -- matching the real
- * x86_64 syscall ABI's convention for a 4th argument (glibc's own
- * syscall() wrapper does exactly this same "register asm" trick to
- * pin a value to r10 specifically). */
+/* Same as syscall3, plus a 4th arg passed in r10 -- the real x86_64
+ * syscall ABI's convention for a 4th argument (rcx isn't available for
+ * it: `syscall` overwrites rcx with the return address, which is
+ * exactly why the ABI uses r10 here instead of the calling-convention
+ * rcx a plain function call would use). */
 static inline long syscall4(long num, long a1, long a2, long a3, long a4) {
     long ret;
     register long r10_val asm("r10") = a4;
     asm volatile (
-        "int $0x80"
+        "syscall"
         : "=a"(ret)
         : "a"(num), "D"(a1), "S"(a2), "d"(a3), "r"(r10_val)
-        : "memory"
+        : "rcx", "r11", "memory"
     );
     return ret;
 }

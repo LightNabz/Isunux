@@ -5,11 +5,11 @@ bits 64
 ; rsi = the top of the user stack to hand it
 ;
 ; Never returns -- this is a one-way trip into ring 3. (Getting back
-; into ring 0 afterward happens via isr128's own iretq on the way OUT of
-; a syscall, not by this function ever regaining control.)
+; into ring 0 afterward happens via syscall_entry's own sysretq on the
+; way OUT of a syscall, not by this function ever regaining control.)
 global enter_userspace
 enter_userspace:
-    mov ax, 0x1b        ; GDT_USER_DATA (0x18 | RPL 3)
+    mov ax, 0x23         ; GDT_USER_DATA (0x20 | RPL 3)
     mov ds, ax
     mov es, ax
     mov fs, ax
@@ -18,7 +18,7 @@ enter_userspace:
     ; we're about to build below, which is the only correct way to load
     ; SS with a DPL=3 selector while still executing at CPL=0.
 
-    push 0x1b            ; SS  = user data selector
+    push 0x23            ; SS  = user data selector
     push rsi              ; RSP = user stack pointer
 
     pushfq                ; grab current RFLAGS as a starting point...
@@ -27,7 +27,7 @@ enter_userspace:
                            ; the scheduler) still work while ring 3 runs
     push rax               ; RFLAGS
 
-    push 0x23              ; CS  = GDT_USER_CODE (0x20 | RPL 3)
+    push 0x2b               ; CS  = GDT_USER_CODE (0x28 | RPL 3)
     push rdi                ; RIP = user entry point
 
     iretq                    ; pops RIP,CS,RFLAGS,RSP,SS and jumps to ring 3
