@@ -230,6 +230,24 @@ void syscall_handler(interrupt_frame_t *frame) {
             frame->rax = 0;
             break;
         }
+        case SYS_ARGTEST: {
+            /* Debug-only: proves all 6 registers of the real syscall
+             * ABI survive mini_libc's syscall6() -> syscall_entry's
+             * manual frame build -> here, unmolested and in the right
+             * slots. Each bit of the return value corresponds to one
+             * argument matching its expected sentinel -- 0b111111 (63)
+             * means all six arrived correctly; any 0 bit says exactly
+             * which register to go stare at. */
+            uint64_t result = 0;
+            if (frame->rdi == 0x1111111111111111ULL) result |= (1 << 0);
+            if (frame->rsi == 0x2222222222222222ULL) result |= (1 << 1);
+            if (frame->rdx == 0x3333333333333333ULL) result |= (1 << 2);
+            if (frame->r10 == 0x4444444444444444ULL) result |= (1 << 3);
+            if (frame->r8  == 0x5555555555555555ULL) result |= (1 << 4);
+            if (frame->r9  == 0x6666666666666666ULL) result |= (1 << 5);
+            frame->rax = result;
+            break;
+        }
         case SYS_EXIT: {
             sys_exit((int)frame->rdi);
             break; /* unreachable -- sys_exit never returns */

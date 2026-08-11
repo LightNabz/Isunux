@@ -31,6 +31,7 @@
 #define SYS_GETGID  28
 #define SYS_TTY_SET_RAW  29
 #define SYS_TTY_SET_ECHO 30
+#define SYS_ARGTEST      31 /* debug-only, see kernel/syscall.c */
 
 /* Mirrors kernel/syscall.h -- see there for why only these three exist. */
 #define PROT_READ  1
@@ -82,12 +83,55 @@ typedef struct {
 #define VFS_PERM_EXEC  0x1
 
 /* Same convention as the kernel's syscall_handler expects: syscall
- * number in rax, args in rdi/rsi/rdx, triggered via the real x86_64
- * `syscall` instruction (kernel/isr.asm's syscall_entry). `syscall`
- * itself clobbers rcx (loaded with the return address) and r11
- * (loaded with RFLAGS) as a hardware side effect -- both need to be in
- * the clobber list so the compiler doesn't keep anything live there
- * across the call, same as real libc's syscall wrapper does. */
+ * number in rax, up to 6 args in rdi/rsi/rdx/r10/r8/r9 -- the real
+ * x86_64 `syscall` ABI, triggered via the actual `syscall` instruction
+ * (kernel/isr.asm's syscall_entry). `syscall` itself clobbers rcx
+ * (loaded with the return address) and r11 (loaded with RFLAGS) as a
+ * hardware side effect -- both need to be in the clobber list so the
+ * compiler doesn't keep anything live there across the call, same as
+ * real libc's syscall wrapper does. rcx isn't available for a 4th+
+ * argument for exactly this reason (it's already spoken for), which is
+ * why the ABI moves to r10/r8/r9 instead of the calling-convention
+ * rcx/r8/r9 a plain function call would use for args 4-6.
+ *
+ * One function per arg count rather than a single variadic-looking
+ * macro -- each needs a different exact set of register constraints,
+ * and being explicit here is more honest about what's actually
+ * happening than hiding it behind macro-generated boilerplate. */
+
+static inline long syscall0(long num) {
+    long ret;
+    asm volatile (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
+static inline long syscall1(long num, long a1) {
+    long ret;
+    asm volatile (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(a1)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
+static inline long syscall2(long num, long a1, long a2) {
+    long ret;
+    asm volatile (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(a1), "S"(a2)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
 static inline long syscall3(long num, long a1, long a2, long a3) {
     long ret;
     asm volatile (
@@ -99,11 +143,6 @@ static inline long syscall3(long num, long a1, long a2, long a3) {
     return ret;
 }
 
-/* Same as syscall3, plus a 4th arg passed in r10 -- the real x86_64
- * syscall ABI's convention for a 4th argument (rcx isn't available for
- * it: `syscall` overwrites rcx with the return address, which is
- * exactly why the ABI uses r10 here instead of the calling-convention
- * rcx a plain function call would use). */
 static inline long syscall4(long num, long a1, long a2, long a3, long a4) {
     long ret;
     register long r10_val asm("r10") = a4;
@@ -116,12 +155,39 @@ static inline long syscall4(long num, long a1, long a2, long a3, long a4) {
     return ret;
 }
 
+static inline long syscall5(long num, long a1, long a2, long a3, long a4, long a5) {
+    long ret;
+    register long r10_val asm("r10") = a4;
+    register long r8_val asm("r8") = a5;
+    asm volatile (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(a1), "S"(a2), "d"(a3), "r"(r10_val), "r"(r8_val)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
+static inline long syscall6(long num, long a1, long a2, long a3, long a4, long a5, long a6) {
+    long ret;
+    register long r10_val asm("r10") = a4;
+    register long r8_val asm("r8") = a5;
+    register long r9_val asm("r9") = a6;
+    asm volatile (
+        "syscall"
+        : "=a"(ret)
+        : "a"(num), "D"(a1), "S"(a2), "d"(a3), "r"(r10_val), "r"(r8_val), "r"(r9_val)
+        : "rcx", "r11", "memory"
+    );
+    return ret;
+}
+
 static inline long sys_write(int fd, const void *buf, unsigned long len) {
     return syscall3(SYS_WRITE, fd, (long)buf, (long)len);
 }
 
 static inline long sys_open(const char *path) {
-    return syscall3(SYS_OPEN, (long)path, 0, 0);
+    return syscall1(SYS_OPEN, (long)path);
 }
 
 static inline long sys_read(int fd, void *buf, unsigned long len) {
@@ -129,35 +195,35 @@ static inline long sys_read(int fd, void *buf, unsigned long len) {
 }
 
 static inline long sys_close(int fd) {
-    return syscall3(SYS_CLOSE, fd, 0, 0);
+    return syscall1(SYS_CLOSE, fd);
 }
 
 /* new_brk == 0 just queries the current break without changing it --
  * classic brk() convention. */
 static inline long sys_brk(unsigned long new_brk) {
-    return syscall3(SYS_BRK, (long)new_brk, 0, 0);
+    return syscall1(SYS_BRK, (long)new_brk);
 }
 
 /* returns 0 in the child, the child's pid in the parent, -1 on failure */
 static inline long sys_fork(void) {
-    return syscall3(SYS_FORK, 0, 0, 0);
+    return syscall0(SYS_FORK);
 }
 
 /* only returns (with -1) on failure -- on success, this line of code
  * never resumes, a completely different program is running here now */
 static inline long sys_execve(const char *path, char **argv) {
-    return syscall3(SYS_EXECVE, (long)path, (long)argv, 0);
+    return syscall2(SYS_EXECVE, (long)path, (long)argv);
 }
 
 /* target_pid == -1 means "any child". blocks until a matching child
  * exits, then returns its pid (or -1 if there's no such child at all).
  * writes the child's exit code to *status if status is non-NULL. */
 static inline long sys_waitpid(int target_pid, int *status) {
-    return syscall3(SYS_WAITPID, target_pid, (long)status, 0);
+    return syscall2(SYS_WAITPID, target_pid, (long)status);
 }
 
 static inline void sys_exit(int code) {
-    syscall3(SYS_EXIT, code, 0, 0);
+    syscall1(SYS_EXIT, code);
     for (;;) { } /* sys_exit never returns, this is just a safety net */
 }
 
@@ -168,36 +234,36 @@ static inline long sys_readdir(const char *path, int index, char *name_out, unsi
 }
 
 static inline long sys_chdir(const char *path) {
-    return syscall3(SYS_CHDIR, (long)path, 0, 0);
+    return syscall1(SYS_CHDIR, (long)path);
 }
 
 static inline long sys_getcwd(char *buf, unsigned long size) {
-    return syscall3(SYS_GETCWD, (long)buf, (long)size, 0);
+    return syscall2(SYS_GETCWD, (long)buf, (long)size);
 }
 
 static inline long sys_mkdir(const char *path) {
-    return syscall3(SYS_MKDIR, (long)path, 0, 0);
+    return syscall1(SYS_MKDIR, (long)path);
 }
 
 static inline long sys_create(const char *path) {
-    return syscall3(SYS_CREATE, (long)path, 0, 0);
+    return syscall1(SYS_CREATE, (long)path);
 }
 
 static inline long sys_unlink(const char *path) {
-    return syscall3(SYS_UNLINK, (long)path, 0, 0);
+    return syscall1(SYS_UNLINK, (long)path);
 }
 
 static inline long sys_stat(const char *path, stat_t *out) {
-    return syscall3(SYS_STAT, (long)path, (long)out, 0);
+    return syscall2(SYS_STAT, (long)path, (long)out);
 }
 
 static inline long sys_dup2(int oldfd, int newfd) {
-    return syscall3(SYS_DUP2, oldfd, newfd, 0);
+    return syscall2(SYS_DUP2, oldfd, newfd);
 }
 
 /* fds_out[0] = read end, fds_out[1] = write end, matching real pipe(2) */
 static inline long sys_pipe(int fds_out[2]) {
-    return syscall3(SYS_PIPE, (long)fds_out, 0, 0);
+    return syscall1(SYS_PIPE, (long)fds_out);
 }
 
 /* sig is one of SIGINT/SIGKILL/SIGTERM/SIGCHLD above. Returns 0 on
@@ -205,11 +271,11 @@ static inline long sys_pipe(int fds_out[2]) {
  * kill()'s behavior of that being a harmless no-op signal delivery to
  * a zombie), -1 if target_pid doesn't exist or sig isn't recognized. */
 static inline long sys_kill(int target_pid, int sig) {
-    return syscall3(SYS_KILL, target_pid, sig, 0);
+    return syscall2(SYS_KILL, target_pid, sig);
 }
 
 static inline long sys_getpid(void) {
-    return syscall3(SYS_GETPID, 0, 0, 0);
+    return syscall0(SYS_GETPID);
 }
 
 /* Only the owning uid or root may chmod a path -- returns -1 on a bad
@@ -217,7 +283,7 @@ static inline long sys_getpid(void) {
  * 0755 or 0644 (there's no umask, so whatever's passed is exactly
  * what's set). */
 static inline long sys_chmod(const char *path, unsigned long mode) {
-    return syscall3(SYS_CHMOD, (long)path, (long)mode, 0);
+    return syscall2(SYS_CHMOD, (long)path, (long)mode);
 }
 
 /* Root-only -- gives a path a new owning uid/gid. Returns -1 on a bad
@@ -232,17 +298,17 @@ static inline long sys_chown(const char *path, unsigned long uid, unsigned long 
  * drop to a lesser uid for testing. Returns -1 if the caller isn't
  * root and new_uid/gid isn't already the caller's own. */
 static inline long sys_setuid(unsigned long new_uid) {
-    return syscall3(SYS_SETUID, (long)new_uid, 0, 0);
+    return syscall1(SYS_SETUID, (long)new_uid);
 }
 static inline long sys_setgid(unsigned long new_gid) {
-    return syscall3(SYS_SETGID, (long)new_gid, 0, 0);
+    return syscall1(SYS_SETGID, (long)new_gid);
 }
 
 static inline long sys_getuid(void) {
-    return syscall3(SYS_GETUID, 0, 0, 0);
+    return syscall0(SYS_GETUID);
 }
 static inline long sys_getgid(void) {
-    return syscall3(SYS_GETGID, 0, 0, 0);
+    return syscall0(SYS_GETGID);
 }
 
 /* Switches the console between canonical (line-buffered, default) and
@@ -250,7 +316,7 @@ static inline long sys_getgid(void) {
  * per-fd -- see keyboard.h's doc comment on tty_set_raw() for why.
  * Ctrl-C/Ctrl-Z keep working in either mode. */
 static inline long sys_tty_set_raw(int enable) {
-    return syscall3(SYS_TTY_SET_RAW, (long)enable, 0, 0);
+    return syscall1(SYS_TTY_SET_RAW, (long)enable);
 }
 
 /* Toggles local echo, independent of canonical/raw mode -- canonical
@@ -258,7 +324,7 @@ static inline long sys_tty_set_raw(int enable) {
  * shape of a password-style prompt: line editing still works, nothing
  * is drawn). See keyboard.h's doc comment on tty_set_echo(). */
 static inline long sys_tty_set_echo(int enable) {
-    return syscall3(SYS_TTY_SET_ECHO, (long)enable, 0, 0);
+    return syscall1(SYS_TTY_SET_ECHO, (long)enable);
 }
 
 /* addr_hint is always ignored (no MAP_FIXED support) -- this kernel
@@ -273,7 +339,7 @@ static inline long sys_mmap(unsigned long addr_hint, unsigned long length, int p
 }
 
 static inline long sys_munmap(unsigned long addr, unsigned long length) {
-    return syscall3(SYS_MUNMAP, (long)addr, (long)length, 0);
+    return syscall2(SYS_MUNMAP, (long)addr, (long)length);
 }
 
 /* Tells the kernel which pids should receive SIGINT/SIGTSTP on
@@ -282,5 +348,16 @@ static inline long sys_munmap(unsigned long addr, unsigned long length) {
  * to 8 pids; pass count 0 (pids can be NULL then) to clear it, which
  * the shell does once it's back at the prompt. */
 static inline long sys_set_foreground(const int *pids, int count) {
-    return syscall3(SYS_SET_FOREGROUND, (long)pids, count, 0);
+    return syscall2(SYS_SET_FOREGROUND, (long)pids, count);
+}
+
+/* Debug-only -- see kernel/syscall.c's SYS_ARGTEST case. Passes 6
+ * fixed sentinel values through the full 6-register syscall ABI and
+ * returns a 6-bit mask of which ones the kernel actually saw correctly
+ * -- 0b111111 (63) means every register survived the round trip. */
+static inline long sys_argtest(void) {
+    return syscall6(SYS_ARGTEST,
+        (long)0x1111111111111111ULL, (long)0x2222222222222222ULL,
+        (long)0x3333333333333333ULL, (long)0x4444444444444444ULL,
+        (long)0x5555555555555555ULL, (long)0x6666666666666666ULL);
 }

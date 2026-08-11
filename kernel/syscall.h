@@ -32,6 +32,7 @@
 #define SYS_GETGID  28
 #define SYS_TTY_SET_RAW  29
 #define SYS_TTY_SET_ECHO 30
+#define SYS_ARGTEST      31 /* debug-only, see syscall.c -- exists purely to boot-verify the 6-arg widening below, not a real facility */
 
 /* Real Linux prot/flags values, same "why invent our own" reasoning as
  * the signal numbers above. Only what our anonymous-only mmap()
@@ -81,9 +82,8 @@
 #define ENCODE_STOPPED(sig)    ((((sig) & 0xff) << 8) | 0x7f)
 
 /* Called from syscall_entry (isr.asm) with a pointer to the saved
- * register frame. Syscall number comes in via rax, arguments via
- * rdi/rsi/rdx (widening to the full 6-register x86_64 `syscall` ABI --
- * rdi/rsi/rdx/r10/r8/r9 -- is still pending, next up after this).
+ * register frame. Syscall number comes in via rax, arguments via the
+ * full 6-register x86_64 `syscall` ABI: rdi/rsi/rdx/r10/r8/r9.
  * The return value is written straight into frame->rax, which is the
  * same memory syscall_entry's epilogue pops back into the real rax
  * register on the way out -- so writing frame->rax IS setting the

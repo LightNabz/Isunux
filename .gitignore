@@ -5,3 +5,4 @@
 iso_root
 iso_root/*
 *.tar.gz
+disk.img
