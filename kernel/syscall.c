@@ -93,7 +93,8 @@ void syscall_handler(interrupt_frame_t *frame) {
         case SYS_EXECVE: {
             const char *path = (const char *)frame->rdi;
             char **argv = (char **)frame->rsi;
-            frame->rax = (uint64_t)do_exec(frame, path, argv);
+            char **envp = (char **)frame->rdx;
+            frame->rax = (uint64_t)do_exec(frame, path, argv, envp);
             break;
         }
         case SYS_WAITPID: {

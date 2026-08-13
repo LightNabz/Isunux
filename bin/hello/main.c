@@ -123,7 +123,7 @@ int main(int argc, char **argv) {
          * same binary, loaded through the real VFS this time, with a
          * marker argv[1] so it doesn't recurse forever */
         char *new_argv[] = { "hello", "--no-recurse", 0 };
-        sys_execve("/bin/hello", new_argv);
+        sys_execve("/bin/hello", new_argv, 0);
         /* only reached if execve failed */
         printf("[child] execve failed!\n");
         sys_exit(1);

@@ -41,7 +41,8 @@ typedef struct __attribute__((packed)) {
 #define EM_X86_64   0x3e
 
 int elf_load(uint64_t pml4_phys, const uint8_t *elf_data, uint64_t elf_size,
-             uint64_t *entry_out, uint64_t *highest_vaddr_out) {
+             uint64_t *entry_out, uint64_t *highest_vaddr_out,
+             uint64_t *phdr_vaddr_out, uint16_t *phentsize_out, uint16_t *phnum_out) {
     if (elf_size < sizeof(elf64_ehdr_t)) {
         serial_print("[elf] file too small to even hold a header\n");
         return 0;
@@ -71,6 +72,7 @@ int elf_load(uint64_t pml4_phys, const uint8_t *elf_data, uint64_t elf_size,
 
     uint64_t hhdm = vmm_hhdm_offset();
     uint64_t highest_end = 0;
+    uint64_t phdr_vaddr = 0; /* filled in once we hit the segment covering file offset 0 */
 
     for (uint16_t i = 0; i < eh->e_phnum; i++) {
         const elf64_phdr_t *ph =
@@ -78,6 +80,12 @@ int elf_load(uint64_t pml4_phys, const uint8_t *elf_data, uint64_t elf_size,
 
         if (ph->p_type != PT_LOAD) continue;
         if (ph->p_memsz == 0) continue; /* an empty segment (e.g. unused .data/.bss) has nothing to map */
+
+        /* the segment starting at file offset 0 is the one carrying the
+         * ELF header (and, right after it, the phdr table itself) --
+         * see the doc comment on elf_load() in elf.h for why this
+         * arithmetic is correct */
+        if (ph->p_offset == 0) phdr_vaddr = ph->p_vaddr + eh->e_phoff;
 
         /* segment might not start on a page boundary, and its in-memory
          * size (p_memsz) can be bigger than its on-disk size (p_filesz)
@@ -125,5 +133,8 @@ int elf_load(uint64_t pml4_phys, const uint8_t *elf_data, uint64_t elf_size,
 
     *entry_out = eh->e_entry;
     *highest_vaddr_out = highest_end;
+    *phdr_vaddr_out = phdr_vaddr;
+    *phentsize_out = eh->e_phentsize;
+    *phnum_out = eh->e_phnum;
     return 1;
 }

@@ -210,9 +210,14 @@ static inline long sys_fork(void) {
 }
 
 /* only returns (with -1) on failure -- on success, this line of code
- * never resumes, a completely different program is running here now */
-static inline long sys_execve(const char *path, char **argv) {
-    return syscall2(SYS_EXECVE, (long)path, (long)argv);
+ * never resumes, a completely different program is running here now.
+ * envp can be NULL (treated as an empty environment, same as passing
+ * an array containing just a NULL) -- real execve() requires an actual
+ * envp argument, but making it optional here matches how forgiving
+ * this kernel's other syscalls already are (e.g. sys_open's O_* flags
+ * being similarly relaxed). */
+static inline long sys_execve(const char *path, char **argv, char **envp) {
+    return syscall3(SYS_EXECVE, (long)path, (long)argv, (long)envp);
 }
 
 /* target_pid == -1 means "any child". blocks until a matching child
@@ -360,4 +365,30 @@ static inline long sys_argtest(void) {
         (long)0x1111111111111111ULL, (long)0x2222222222222222ULL,
         (long)0x3333333333333333ULL, (long)0x4444444444444444ULL,
         (long)0x5555555555555555ULL, (long)0x6666666666666666ULL);
+}
+
+/* Storage lives in crt0.asm, populated from the initial stack's envp
+ * before main() is ever called -- see the doc comment there. Standard
+ * Unix convention: getenv() below is just a linear scan over this,
+ * exactly what real libc's own getenv() does too. */
+extern char **environ;
+
+/* NULL if the variable isn't set, or name is empty/contains '=' (both
+ * invalid per real getenv()'s own rules). No setenv()/putenv() yet --
+ * nothing in this codebase needs to WRITE the environment from C code
+ * yet (the shell modifies its own separate table and rebuilds a fresh
+ * envp[] at exec time instead, see bin/sh/main.c's build_envp_array()),
+ * so there's nothing here to keep in sync with a mutable environ. */
+static inline char *getenv(const char *name) {
+    if (!name || !*name) return 0;
+    for (int i = 0; name[i]; i++) if (name[i] == '=') return 0;
+
+    if (!environ) return 0;
+    for (int i = 0; environ[i]; i++) {
+        char *entry = environ[i];
+        int j = 0;
+        while (name[j] && entry[j] == name[j]) j++;
+        if (name[j] == '\0' && entry[j] == '=') return &entry[j + 1];
+    }
+    return 0;
 }

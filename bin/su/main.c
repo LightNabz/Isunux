@@ -16,7 +16,7 @@
  * case. A non-root shell trying to "su" to anyone (even back to
  * itself with a different uid) is rejected by the kernel, not by
  * this program. */
-int main(int argc, char **argv) {
+int main(int argc, char **argv, char **envp) {
     if (argc < 2) {
         const char *msg = "usage: su <uid> [gid]\n";
         sys_write(2, msg, 22);
@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
     }
 
     char *new_argv[] = { "sh", 0 };
-    sys_execve("/bin/sh", new_argv);
+    sys_execve("/bin/sh", new_argv, envp); /* real su preserves the environment across a user switch (barring an explicit -/-l login-style reset, which this doesn't implement) */
 
     /* only reached if execve itself failed */
     printf("su: failed to exec /bin/sh\n");

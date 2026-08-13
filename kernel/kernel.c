@@ -213,7 +213,11 @@ void _start(void) {
 
     uint64_t entry_point = 0;
     uint64_t heap_start = 0;
-    int sh_ok = elf_load(proc_as, sh_buf, sh_size, &entry_point, &heap_start);
+    uint64_t phdr_vaddr = 0;
+    uint16_t phentsize = 0;
+    uint16_t phnum = 0;
+    int sh_ok = elf_load(proc_as, sh_buf, sh_size, &entry_point, &heap_start,
+                          &phdr_vaddr, &phentsize, &phnum);
     vfs_read_file_free(sh_buf, sh_buf_pages); /* elf_load already copied every PT_LOAD segment into its own pages */
     if (!sh_ok) {
         serial_print("!!! elf_load failed. halting.\n");
@@ -227,10 +231,19 @@ void _start(void) {
                       stack_phys + p * PAGE_SIZE, PTE_WRITE | PTE_USER);
     }
 
+    /* the very first process's environment doesn't come from anywhere
+     * (there's no parent to inherit from) -- this is ISUNUX's
+     * equivalent of what a real init process gets handed by the
+     * bootloader/kernel command line. Every later process either
+     * inherits this via fork() (same address space, so the same
+     * strings are just already there) or gets whatever its exec()'ing
+     * parent explicitly passed as envp -- see do_exec() in exec.c. */
     static const char *init_argv[] = { "sh" };
+    static const char *init_envp[] = { "PATH=/bin", "HOME=/", "TERM=isunux" };
     uint64_t initial_rsp = build_initial_stack(
         hhdm_offset, stack_phys, stack_base_vaddr,
-        USER_STACK_PAGES * PAGE_SIZE, 1, init_argv);
+        USER_STACK_PAGES * PAGE_SIZE, 1, init_argv, 3, init_envp,
+        entry_point, phdr_vaddr, phentsize, phnum);
 
     process_t *proc = process_alloc(0); /* parent pid 0 = "the kernel" */
     if (!proc) {

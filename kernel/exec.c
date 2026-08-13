@@ -11,18 +11,21 @@
 
 #define MAX_EXEC_ARGS   8
 #define EXEC_ARG_MAXLEN 64
+#define MAX_EXEC_ENVS   16
+#define EXEC_ENV_MAXLEN 128 /* KEY=VALUE strings run longer than a single arg typically does */
 
 static char exec_argv_storage[MAX_EXEC_ARGS][EXEC_ARG_MAXLEN];
+static char exec_envp_storage[MAX_EXEC_ENVS][EXEC_ENV_MAXLEN];
 
 #define USER_STACK_TOP   0x600000ULL
 #define USER_STACK_PAGES 4
 
-int64_t do_exec(interrupt_frame_t *frame, const char *path, char **user_argv) {
-    /* Read argv's actual STRING CONTENTS out of the caller's still-active
-     * address space right now, before anything about it changes. Once we
-     * switch CR3 below, the old user pointers stop meaning anything --
-     * they pointed into mappings that may not even exist in the new
-     * address space at all. */
+int64_t do_exec(interrupt_frame_t *frame, const char *path, char **user_argv, char **user_envp) {
+    /* Read argv/envp's actual STRING CONTENTS out of the caller's still-
+     * active address space right now, before anything about it changes.
+     * Once we switch CR3 below, the old user pointers stop meaning
+     * anything -- they pointed into mappings that may not even exist in
+     * the new address space at all. */
     int argc = 0;
     const char *argv_for_stack[MAX_EXEC_ARGS];
 
@@ -37,6 +40,23 @@ int64_t do_exec(interrupt_frame_t *frame, const char *path, char **user_argv) {
             exec_argv_storage[argc][j] = '\0';
             argv_for_stack[argc] = exec_argv_storage[argc];
             argc++;
+        }
+    }
+
+    int envc = 0;
+    const char *envp_for_stack[MAX_EXEC_ENVS];
+
+    if (user_envp) {
+        while (envc < MAX_EXEC_ENVS && user_envp[envc] != NULL) {
+            const char *src = user_envp[envc];
+            int j = 0;
+            while (src[j] && j < EXEC_ENV_MAXLEN - 1) {
+                exec_envp_storage[envc][j] = src[j];
+                j++;
+            }
+            exec_envp_storage[envc][j] = '\0';
+            envp_for_stack[envc] = exec_envp_storage[envc];
+            envc++;
         }
     }
 
@@ -68,7 +88,11 @@ int64_t do_exec(interrupt_frame_t *frame, const char *path, char **user_argv) {
     uint64_t new_pml4 = vmm_new_address_space();
     uint64_t entry_point = 0;
     uint64_t heap_start = 0;
-    int ok = elf_load(new_pml4, exec_buf, file_size, &entry_point, &heap_start);
+    uint64_t phdr_vaddr = 0;
+    uint16_t phentsize = 0;
+    uint16_t phnum = 0;
+    int ok = elf_load(new_pml4, exec_buf, file_size, &entry_point, &heap_start,
+                       &phdr_vaddr, &phentsize, &phnum);
     vfs_read_file_free(exec_buf, exec_buf_pages); /* elf_load has already copied every PT_LOAD segment into its own pages by now -- this scratch copy is done */
     if (!ok) {
         serial_print("[exec] elf_load failed -- old process image untouched\n");
@@ -88,7 +112,8 @@ int64_t do_exec(interrupt_frame_t *frame, const char *path, char **user_argv) {
 
     uint64_t initial_rsp = build_initial_stack(
         vmm_hhdm_offset(), stack_phys, stack_base_vaddr,
-        USER_STACK_PAGES * PAGE_SIZE, argc, argv_for_stack);
+        USER_STACK_PAGES * PAGE_SIZE, argc, argv_for_stack, envc, envp_for_stack,
+        entry_point, phdr_vaddr, phentsize, phnum);
 
     /* everything that could still fail has already happened -- past
      * this point we commit. Same process, same pid, same fd table

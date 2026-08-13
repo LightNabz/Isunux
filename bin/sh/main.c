@@ -31,14 +31,14 @@ static int str_to_int(const char *s) {
 /* ==================== shell-local environment ====================
  * Real POSIX environment variables live in envp[], passed alongside
  * argv[] into every exec()'d process, and a child reads them itself
- * via getenv(). This kernel's execve() has no envp parameter at all
- * (a documented scope cut -- extending the ABI to pass one is real,
- * separate kernel work). So this is SHELL-LOCAL only: $VAR expansion
- * and the PATH search below both consult this table, but a child
- * program can't see or read it -- there's no getenv() for it to call.
- * "export" is accepted for familiarity but behaves exactly like a
- * plain assignment here, since there's no envp mechanism for it to
- * actually change. */
+ * via getenv(). That kernel ABI is real now (do_exec() in exec.c) --
+ * this table is still the shell's own bookkeeping (what $VAR expansion
+ * and the PATH search below consult), but it's no longer a dead end:
+ * main()'s envp parameter seeds it at startup (whatever THIS shell was
+ * itself exec()'d with), and build_envp_array() below turns it back
+ * into a real envp[] every time a child gets exec()'d, so changes this
+ * shell makes (assignments, "export") actually do propagate to
+ * children now, the same as a real shell. */
 #define MAX_ENV 32
 typedef struct {
     char name[32];
@@ -87,6 +87,32 @@ static void do_assignment(const char *word) {
     while (word[i] && word[i] != '=' && i < sizeof(name) - 1) { name[i] = word[i]; i++; }
     name[i] = '\0';
     env_set(name, word[i] == '=' ? &word[i + 1] : "");
+}
+
+/* Turns env_vars[] back into a real "NAME=VALUE" envp[] array to hand
+ * to sys_execve(). Called right before an exec, always in the freshly
+ * forked child (COW means writing these static buffers here never
+ * touches the parent shell's copy) -- safe to keep as static storage
+ * rather than allocating, same reasoning exec_argv_storage in the
+ * kernel's exec.c already relies on. */
+static char envp_strs[MAX_ENV][32 + 1 + 128]; /* name + '=' + value, bounds match env_var_t's own field sizes */
+static char *envp_array[MAX_ENV + 1];
+
+static char **build_envp_array(void) {
+    int n = 0;
+    for (int i = 0; i < MAX_ENV; i++) {
+        if (!env_vars[i].used) continue;
+        char *dst = envp_strs[n];
+        int j = 0;
+        for (int k = 0; env_vars[i].name[k]; k++) dst[j++] = env_vars[i].name[k];
+        dst[j++] = '=';
+        for (int k = 0; env_vars[i].value[k] && j < (int)sizeof(envp_strs[0]) - 1; k++) dst[j++] = env_vars[i].value[k];
+        dst[j] = '\0';
+        envp_array[n] = dst;
+        n++;
+    }
+    envp_array[n] = 0;
+    return envp_array;
 }
 
 /* ==================== job control ====================
@@ -519,7 +545,7 @@ static void run_pipeline(stage_t *stages, int nstages, int background, const cha
                 sys_exit(127);
             }
 
-            sys_execve(path, stages[i].argv);
+            sys_execve(path, stages[i].argv, build_envp_array());
             printf("%s: exec failed\n", stages[i].argv[0]);
             sys_exit(127);
         } else if (pid > 0) {
@@ -569,12 +595,32 @@ static void run_pipeline(stage_t *stages, int nstages, int background, const cha
     }
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv, char **envp) {
     (void)argc;
     (void)argv;
 
     env_set("PATH", "/bin");
     env_set("HOME", "/");
+
+    /* seed from whatever this shell itself inherited, overriding the
+     * bare-minimum defaults above wherever the parent actually
+     * provided something -- same "a child sees what its exec()'ing
+     * parent passed" model a real shell relies on (this is exactly how
+     * su passes its own envp through to the shell it execs, and how
+     * kernel.c seeds pid 1's very first environment). */
+    if (envp) {
+        for (int i = 0; envp[i]; i++) {
+            const char *eq = envp[i];
+            while (*eq && *eq != '=') eq++;
+            if (*eq != '=') continue; /* malformed entry (no '=' at all) -- skip rather than guess */
+            char name[32];
+            uint64_t len = (uint64_t)(eq - envp[i]);
+            if (len >= sizeof(name)) len = sizeof(name) - 1;
+            for (uint64_t j = 0; j < len; j++) name[j] = envp[i][j];
+            name[len] = '\0';
+            env_set(name, eq + 1);
+        }
+    }
 
     printf("\nISUNUX shell -- type a command (try: ls, echo hi | cat, cat hello.txt > /tmp/copy.txt)\n");
 

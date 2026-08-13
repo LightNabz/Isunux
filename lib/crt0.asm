@@ -1,8 +1,13 @@
 bits 64
 
 global _start
+global environ
 extern main
 
+section .bss
+environ: resq 1   ; char **environ -- storage lives here, mini_libc.h's getenv() reads it (extern declaration there)
+
+section .text
 _start:
     ; per the layout build_initial_stack() wrote:
     ;   [rsp]    = argc
@@ -14,6 +19,7 @@ _start:
     ; slots (argc pointers + one NULL), so envp = argv + (argc+1)*8
     mov rax, rdi
     lea rdx, [rsi + rax*8 + 8]    ; envp
+    mov [environ], rdx            ; stash it globally too, for getenv() -- not every program bothers declaring envp as main's 3rd parameter
 
     call main                     ; a real `call`, so main's prologue sees
                                    ; exactly the stack state any normal
