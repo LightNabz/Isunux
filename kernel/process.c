@@ -44,6 +44,7 @@ void process_init(process_t *p, uint64_t pml4_phys, uint64_t heap_start) {
     p->cwd[1] = '\0';
     p->uid = 0; /* root -- no login system exists yet, see process.h's doc comment on process_t::uid */
     p->gid = 0;
+    p->fs_base = 0; /* nothing has called arch_prctl(ARCH_SET_FS, ...) yet */
 
     for (int fd = 0; fd < 3; fd++) {
         p->fds[fd].node = devfs_console_vnode();
@@ -59,6 +60,7 @@ void process_clone_into(process_t *dst, process_t *src, uint64_t new_pml4_phys) 
     dst->mmap_next = src->mmap_next;
     dst->uid = src->uid;
     dst->gid = src->gid;
+    dst->fs_base = src->fs_base; /* fork() gives the child the same TLS pointer -- its memory (COW) is a copy of the same TLS block the parent's FS.base already points at */
     for (int i = 0; i < VFS_MAX_PATH; i++) dst->cwd[i] = src->cwd[i];
     for (int fd = 0; fd < MAX_FDS; fd++) {
         dst->fds[fd] = src->fds[fd]; /* struct copy -- by value, see process.h note */

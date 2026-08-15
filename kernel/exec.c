@@ -123,6 +123,8 @@ int64_t do_exec(interrupt_frame_t *frame, const char *path, char **user_argv, ch
     proc->pml4_phys = new_pml4;
     proc->heap_start = heap_start;
     proc->heap_end = heap_start;
+    proc->fs_base = 0; /* fresh program image, hasn't called arch_prctl(ARCH_SET_FS, ...) yet -- and the OLD value would just be stale/wrong for it anyway */
+    wrmsr(MSR_FS_BASE, 0); /* reloaded HERE rather than waiting for task.c's next context switch to pick up proc->fs_base -- exec() keeps running as the SAME task (sysretq resumes it directly, no switch_context involved), so the hardware MSR would otherwise still hold whatever the OLD program left there */
 
     vmm_activate(new_pml4);
 

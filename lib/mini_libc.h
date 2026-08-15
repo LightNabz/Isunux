@@ -32,6 +32,10 @@
 #define SYS_TTY_SET_RAW  29
 #define SYS_TTY_SET_ECHO 30
 #define SYS_ARGTEST      31 /* debug-only, see kernel/syscall.c */
+#define SYS_ARCH_PRCTL   32
+
+#define ARCH_SET_FS 0x1002
+#define ARCH_GET_FS 0x1003
 
 /* Mirrors kernel/syscall.h -- see there for why only these three exist. */
 #define PROT_READ  1
@@ -365,6 +369,15 @@ static inline long sys_argtest(void) {
         (long)0x1111111111111111ULL, (long)0x2222222222222222ULL,
         (long)0x3333333333333333ULL, (long)0x4444444444444444ULL,
         (long)0x5555555555555555ULL, (long)0x6666666666666666ULL);
+}
+
+/* Not something mini_libc's own crt0/programs ever call themselves --
+ * ISUNUX's native binaries have no TLS mechanism and don't need one.
+ * This exists purely so a borrowed static musl/glibc binary's _start
+ * has something real to call (see kernel/syscall.c's SYS_ARCH_PRCTL
+ * case) once 1g gets here. */
+static inline long sys_arch_prctl(int code, unsigned long addr) {
+    return syscall2(SYS_ARCH_PRCTL, code, (long)addr);
 }
 
 /* Storage lives in crt0.asm, populated from the initial stack's envp

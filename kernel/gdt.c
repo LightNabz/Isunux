@@ -1,5 +1,6 @@
 #include "gdt.h"
 #include "tss.h"
+#include "kutil.h"
 #include <stdint.h>
 
 typedef struct __attribute__((packed)) {
@@ -99,16 +100,6 @@ void gdt_init(void) {
 #define MSR_LSTAR  0xC0000082
 #define MSR_FMASK  0xC0000084
 #define EFER_SCE   (1ULL << 0) /* SYSCALL/SYSRET enable */
-
-static inline uint64_t rdmsr(uint32_t msr) {
-    uint32_t lo, hi;
-    asm volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
-    return ((uint64_t)hi << 32) | lo;
-}
-
-static inline void wrmsr(uint32_t msr, uint64_t value) {
-    asm volatile ("wrmsr" : : "c"(msr), "a"((uint32_t)value), "d"((uint32_t)(value >> 32)));
-}
 
 /* isr.asm's SYSCALL entry point -- IA32_LSTAR points straight at it,
  * completely bypassing the IDT (this is not an interrupt gate, there's

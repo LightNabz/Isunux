@@ -6,6 +6,7 @@
 #include "exec.h"
 #include "vfs.h"
 #include "keyboard.h"
+#include "kutil.h"
 
 static void sys_exit(int code) {
     serial_print("[syscall] exit(");
@@ -219,6 +220,29 @@ void syscall_handler(interrupt_frame_t *frame) {
         }
         case SYS_GETGID: {
             frame->rax = proc ? proc->gid : 0;
+            break;
+        }
+        case SYS_ARCH_PRCTL: {
+            /* Both musl and glibc's _start call this almost immediately
+             * to set up TLS -- %fs-relative memory (errno, the TLS
+             * block) doesn't work at all until this has run once. */
+            long code = (long)frame->rdi;
+            uint64_t addr = frame->rsi;
+            if (code == ARCH_SET_FS) {
+                if (proc) proc->fs_base = addr;
+                wrmsr(MSR_FS_BASE, addr); /* take effect immediately, same reasoning as exec.c's reset -- this task keeps running without a context switch in between */
+                frame->rax = 0;
+            } else if (code == ARCH_GET_FS) {
+                /* addr here is actually an OUT pointer (arch_prctl(ARCH_GET_FS, &result)),
+                 * not a value -- matches real Linux's arch_prctl(2) signature exactly.
+                 * Trusted as-is, same as every other user pointer this kernel
+                 * dereferences directly (sys_read/write, etc.) -- no validation
+                 * layer exists yet anywhere in this codebase to be consistent with. */
+                *(uint64_t *)addr = proc ? proc->fs_base : 0;
+                frame->rax = 0;
+            } else {
+                frame->rax = (uint64_t)-1; /* unrecognized code -- ARCH_SET_GS/ARCH_GET_GS et al exist in real Linux but nothing here uses %gs for anything, so they're just not implemented */
+            }
             break;
         }
         case SYS_TTY_SET_RAW: {

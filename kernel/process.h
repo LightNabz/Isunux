@@ -30,6 +30,11 @@ typedef struct process {
                     * call that to become anyone, matching real Unix
                     * setuid()'s privileged case. */
     uint64_t gid;
+    uint64_t fs_base; /* IA32_FS_BASE for this process -- see arch_prctl(ARCH_SET_FS, ...) in
+                        * syscall.c and the MSR reload in task.c's scheduler switch. 0 until a
+                        * program actually calls arch_prctl (real programs never read %fs before
+                        * that; ISUNUX's own mini_libc-built binaries never call it at all, so this
+                        * stays 0 -- and therefore unused -- for every hand-written ISUNUX program). */
     int pid;
     int parent_pid;
     int exit_code;

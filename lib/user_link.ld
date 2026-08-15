@@ -3,7 +3,7 @@ ENTRY(_start)
 
 PHDRS
 {
-    text PT_LOAD FLAGS(5); /* R + X */
+    text PT_LOAD FILEHDR PHDRS FLAGS(5); /* R + X -- FILEHDR/PHDRS here is what actually maps the ELF header and program-header table into memory at all. Without them, file offset 0 (where those live) just isn't part of any LOAD segment -- a perfectly valid ELF file, just one where AT_PHDR has nowhere real to point, since the loader never reads that part of the file into the process in the first place. */
     data PT_LOAD FLAGS(6); /* R + W */
 }
 

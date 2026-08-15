@@ -33,6 +33,15 @@
 #define SYS_TTY_SET_RAW  29
 #define SYS_TTY_SET_ECHO 30
 #define SYS_ARGTEST      31 /* debug-only, see syscall.c -- exists purely to boot-verify the 6-arg widening below, not a real facility */
+#define SYS_ARCH_PRCTL   32
+
+/* Real Linux's arch_prctl "code" values -- used as-is even though our
+ * own syscall NUMBER above isn't Linux's yet (that's 1f, deliberately
+ * last). These aren't syscall numbers, just an argument value, so
+ * there's no reason not to already match what real musl/glibc will
+ * actually pass once 1g gets here. */
+#define ARCH_SET_FS 0x1002
+#define ARCH_GET_FS 0x1003
 
 /* Real Linux prot/flags values, same "why invent our own" reasoning as
  * the signal numbers above. Only what our anonymous-only mmap()

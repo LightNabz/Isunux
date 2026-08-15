@@ -243,6 +243,16 @@ void yield(void) {
      * instead of on whatever task happened to set TSS.rsp0 last. */
     tss_set_kernel_stack(next->kernel_stack_top);
 
+    /* Same idea, same reason, for FS.base: there's exactly one
+     * IA32_FS_BASE MSR on the CPU, and arch_prctl(ARCH_SET_FS, ...)
+     * (syscall.c) only ever wrote into *this* task's process_t, not the
+     * actual hardware register -- so whichever task's fs_base we
+     * loaded last is what every OTHER task would see too, if we didn't
+     * reload it here. Kernel-only tasks (proc == NULL) never touch
+     * %fs, so there's nothing to restore for them -- leaving the MSR
+     * whatever it was is harmless. */
+    if (next->proc) wrmsr(MSR_FS_BASE, next->proc->fs_base);
+
     /* and switch to whichever address space this task actually belongs
      * to -- different processes have genuinely different page tables
      * now. Kernel-only tasks (proc == NULL, e.g. 'main') just run under

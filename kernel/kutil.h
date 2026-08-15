@@ -61,6 +61,18 @@ static inline void io_wait(void) {
     outb(0x80, 0);
 }
 
+static inline uint64_t rdmsr(uint32_t msr) {
+    uint32_t lo, hi;
+    asm volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static inline void wrmsr(uint32_t msr, uint64_t value) {
+    asm volatile ("wrmsr" : : "c"(msr), "a"((uint32_t)value), "d"((uint32_t)(value >> 32)));
+}
+
+#define MSR_FS_BASE 0xC0000100 /* per-task TLS pointer -- see arch_prctl(ARCH_SET_FS,...) in syscall.c, saved/restored in process_t::fs_base and reloaded on every context switch in task.c */
+
 static inline uint64_t k_strlen(const char *s) {
     uint64_t n = 0;
     while (s[n]) n++;
