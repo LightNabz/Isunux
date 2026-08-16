@@ -27,7 +27,15 @@ _start:
 
     mov edi, eax                  ; exit code = main's return value
                                    ; (writing edi zero-extends into rdi)
-    mov rax, 1                    ; SYS_EXIT
+    mov rax, 60                   ; SYS_EXIT -- real Linux number as of
+                                   ; Tier 3 1f (kernel/syscall.h is the
+                                   ; source of truth; nasm can't include
+                                   ; that C header, so this has to be
+                                   ; kept in sync by hand -- exactly the
+                                   ; kind of raw-literal mirroring
+                                   ; usermode.asm's GDT selectors already
+                                   ; do, same risk, same reason to
+                                   ; comment it loudly)
     syscall                       ; clobbers rcx/r11 (return addr/flags) --
                                    ; irrelevant here, we never return
 
