@@ -1,6 +1,7 @@
 #include "pipe.h"
 #include "task.h"
 #include "kutil.h"
+#include "errno.h"
 
 #define PIPE_BUF_SIZE 4096
 #define MAX_PIPES 16
@@ -124,7 +125,7 @@ int pipe_create(vnode_t **read_end_out, vnode_t **write_end_out) {
     for (int i = 0; i < MAX_PIPES; i++) {
         if (!pipe_pool[i].in_use) { pipe = &pipe_pool[i]; break; }
     }
-    if (!pipe) return -1;
+    if (!pipe) return -ENFILE; /* system-wide pipe pool exhausted -- process.c's process_pipe() already infers this same reason from any nonzero return, this just makes pipe_create()'s own contract correct in its own right too */
 
     k_memset(pipe, 0, sizeof(*pipe));
     pipe->in_use = 1;

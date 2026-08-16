@@ -5,6 +5,7 @@
 #include "limine.h"
 #include "pmm.h"
 #include "vmm.h"
+#include "errno.h"
 
 static vnode_t *root_vnode;
 
@@ -181,7 +182,8 @@ vnode_t *vfs_resolve_path_cwd(const char *cwd, const char *path) {
 
 int vfs_readdir_path(const char *cwd, const char *path, int index, char *name_out, uint64_t name_out_size) {
     vnode_t *node = vfs_resolve_path_cwd(cwd, path);
-    if (!node || node->type != VNODE_DIR || !node->ops || !node->ops->readdir) return -1;
+    if (!node) return -ENOENT;
+    if (node->type != VNODE_DIR || !node->ops || !node->ops->readdir) return -ENOTDIR; /* the "no readdir op" case is only reachable if a directory-typed vnode exists without implementing it -- doesn't happen in practice, both tmpfs and fat always provide one, but folded in here rather than invented a category for something unreachable */
     return node->ops->readdir(node, index, name_out, name_out_size);
 }
 

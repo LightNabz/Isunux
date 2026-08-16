@@ -1,4 +1,5 @@
 #include "process.h"
+#include "errno.h"
 #include "kutil.h"
 #include "pmm.h"
 #include "vmm.h"
@@ -103,7 +104,7 @@ int process_send_signal(process_t *target, int sig) {
         case SIGCHLD:
             return 0; /* ignored by default -- no handler mechanism exists yet for a process to react to it */
         default:
-            return -1; /* unrecognized signal */
+            return -EINVAL; /* unrecognized signal */
     }
 }
 
@@ -200,7 +201,7 @@ int64_t process_waitpid(process_t *self, int target_pid, int *status_out) {
             }
         }
 
-        if (!found_any_child) return -1; /* no such child(ren) at all */
+        if (!found_any_child) return -ECHILD; /* no such child(ren) at all */
 
         task_block(self); /* woken the moment a matching child's state changes -- exit (process_mark_zombie) or stop (process_send_signal) both call task_wake(parent) */
     }
@@ -279,8 +280,8 @@ int process_munmap(process_t *p, uint64_t addr, uint64_t length) {
 
 int process_open(process_t *p, const char *path) {
     vnode_t *node = vfs_resolve_path_cwd(p->cwd, path);
-    if (!node) return -1;
-    if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_READ)) return -1;
+    if (!node) return -ENOENT;
+    if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_READ)) return -EACCES;
 
     for (int fd = 3; fd < MAX_FDS; fd++) {
         if (!p->fds[fd].used) {
@@ -290,7 +291,7 @@ int process_open(process_t *p, const char *path) {
             return fd;
         }
     }
-    return -1; /* out of fd slots */
+    return -EMFILE; /* out of fd slots */
 }
 
 int process_chdir(process_t *p, const char *path) {
@@ -298,8 +299,9 @@ int process_chdir(process_t *p, const char *path) {
     vfs_combine_path(p->cwd, path, combined, sizeof(combined));
 
     vnode_t *node = vfs_resolve_path(combined);
-    if (!node || node->type != VNODE_DIR) return -1;
-    if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_EXEC)) return -1; /* "search" permission -- the x bit on a directory, same meaning as real Unix */
+    if (!node) return -ENOENT;
+    if (node->type != VNODE_DIR) return -ENOTDIR;
+    if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_EXEC)) return -EACCES; /* "search" permission -- the x bit on a directory, same meaning as real Unix */
 
     /* store the canonical path, not the raw combined string -- so cwd
      * is always a clean "/etc", never "/../home/../etc", no matter
@@ -309,10 +311,10 @@ int process_chdir(process_t *p, const char *path) {
 }
 
 long process_read(process_t *p, int fd, void *buf, uint64_t count) {
-    if (fd < 0 || fd >= MAX_FDS || !p->fds[fd].used) return -1;
+    if (fd < 0 || fd >= MAX_FDS || !p->fds[fd].used) return -EBADF;
     vnode_t *node = p->fds[fd].node;
-    if (!node->ops || !node->ops->read) return -1;
-    if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_READ)) return -1;
+    if (!node->ops || !node->ops->read) return -EBADF;
+    if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_READ)) return -EACCES;
 
     long n = node->ops->read(node, buf, count, p->fds[fd].offset);
     if (n > 0) p->fds[fd].offset += (uint64_t)n;
@@ -320,10 +322,10 @@ long process_read(process_t *p, int fd, void *buf, uint64_t count) {
 }
 
 long process_write(process_t *p, int fd, const void *buf, uint64_t count) {
-    if (fd < 0 || fd >= MAX_FDS || !p->fds[fd].used) return -1;
+    if (fd < 0 || fd >= MAX_FDS || !p->fds[fd].used) return -EBADF;
     vnode_t *node = p->fds[fd].node;
-    if (!node->ops || !node->ops->write) return -1;
-    if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_WRITE)) return -1;
+    if (!node->ops || !node->ops->write) return -EBADF;
+    if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_WRITE)) return -EACCES;
 
     long n = node->ops->write(node, buf, count, p->fds[fd].offset);
     if (n > 0) p->fds[fd].offset += (uint64_t)n;
@@ -331,7 +333,7 @@ long process_write(process_t *p, int fd, const void *buf, uint64_t count) {
 }
 
 int process_close(process_t *p, int fd) {
-    if (fd < 0 || fd >= MAX_FDS || !p->fds[fd].used) return -1;
+    if (fd < 0 || fd >= MAX_FDS || !p->fds[fd].used) return -EBADF;
     if (p->fds[fd].node->ops && p->fds[fd].node->ops->close) {
         p->fds[fd].node->ops->close(p->fds[fd].node);
     }
@@ -351,8 +353,8 @@ int process_close(process_t *p, int fd) {
  * always opens/creates it at some other fd, dup2()s it onto 0/1, then
  * closes the original. */
 int process_dup2(process_t *p, int oldfd, int newfd) {
-    if (oldfd < 0 || oldfd >= MAX_FDS || !p->fds[oldfd].used) return -1;
-    if (newfd < 0 || newfd >= MAX_FDS) return -1;
+    if (oldfd < 0 || oldfd >= MAX_FDS || !p->fds[oldfd].used) return -EBADF;
+    if (newfd < 0 || newfd >= MAX_FDS) return -EBADF;
     if (oldfd == newfd) return newfd;
 
     if (p->fds[newfd].used) {
@@ -376,7 +378,7 @@ int process_dup2(process_t *p, int oldfd, int newfd) {
  * closed again, so a failed pipe() never leaks one end). */
 int process_pipe(process_t *p, int fds_out[2]) {
     vnode_t *read_end, *write_end;
-    if (pipe_create(&read_end, &write_end) != 0) return -1;
+    if (pipe_create(&read_end, &write_end) != 0) return -ENFILE; /* system-wide pipe table is full, distinct from this process's own fd table being full below */
 
     int read_fd = -1, write_fd = -1;
     for (int fd = 3; fd < MAX_FDS; fd++) {
@@ -392,7 +394,7 @@ int process_pipe(process_t *p, int fds_out[2]) {
          * handed us for each end so the pipe doesn't leak */
         if (read_end->ops->close) read_end->ops->close(read_end);
         if (write_end->ops->close) write_end->ops->close(write_end);
-        return -1;
+        return -EMFILE;
     }
 
     p->fds[read_fd].node = read_end;
@@ -413,25 +415,28 @@ int process_pipe(process_t *p, int fds_out[2]) {
  * that directory's own vnode_ops -- vnode_ops has no "create myself",
  * only "create a child of this directory". vfs_split_path() is what
  * separates "/a/b/c" into parent "/a/b" and basename "c". */
-static vnode_t *resolve_parent_dir(process_t *p, const char *path, char *base_out, uint64_t base_out_size) {
+static vnode_t *resolve_parent_dir(process_t *p, const char *path, char *base_out, uint64_t base_out_size, int *err_out) {
     char combined[VFS_MAX_PATH];
     vfs_combine_path(p->cwd, path, combined, sizeof(combined));
 
     char dir_path[VFS_MAX_PATH];
     vfs_split_path(combined, dir_path, sizeof(dir_path), base_out, base_out_size);
 
-    if (base_out[0] == '\0') return NULL; /* e.g. path was just "/" */
+    if (base_out[0] == '\0') { *err_out = -EINVAL; return NULL; } /* e.g. path was just "/" -- nothing to use as a basename */
 
     vnode_t *dir = vfs_resolve_path(dir_path);
-    if (!dir || dir->type != VNODE_DIR) return NULL;
+    if (!dir) { *err_out = -ENOENT; return NULL; }
+    if (dir->type != VNODE_DIR) { *err_out = -ENOTDIR; return NULL; }
     return dir;
 }
 
 int process_mkdir(process_t *p, const char *path) {
     char name[VFS_MAX_NAME];
-    vnode_t *dir = resolve_parent_dir(p, path, name, sizeof(name));
-    if (!dir || !dir->ops || !dir->ops->mkdir) return -1;
-    if (!vfs_check_perm(dir, p->uid, p->gid, VFS_PERM_WRITE)) return -1;
+    int err = 0;
+    vnode_t *dir = resolve_parent_dir(p, path, name, sizeof(name), &err);
+    if (!dir) return err;
+    if (!dir->ops || !dir->ops->mkdir) return -EROFS;
+    if (!vfs_check_perm(dir, p->uid, p->gid, VFS_PERM_WRITE)) return -EACCES;
 
     int rc = dir->ops->mkdir(dir, name);
     /* the filesystem itself has no notion of "who's asking" -- it just
@@ -447,9 +452,11 @@ int process_mkdir(process_t *p, const char *path) {
 
 int process_create(process_t *p, const char *path) {
     char name[VFS_MAX_NAME];
-    vnode_t *dir = resolve_parent_dir(p, path, name, sizeof(name));
-    if (!dir || !dir->ops || !dir->ops->create) return -1;
-    if (!vfs_check_perm(dir, p->uid, p->gid, VFS_PERM_WRITE)) return -1;
+    int err = 0;
+    vnode_t *dir = resolve_parent_dir(p, path, name, sizeof(name), &err);
+    if (!dir) return err;
+    if (!dir->ops || !dir->ops->create) return -EROFS;
+    if (!vfs_check_perm(dir, p->uid, p->gid, VFS_PERM_WRITE)) return -EACCES;
 
     int rc = dir->ops->create(dir, name);
     if (rc == 0 && dir->ops->lookup) {
@@ -461,15 +468,17 @@ int process_create(process_t *p, const char *path) {
 
 int process_unlink(process_t *p, const char *path) {
     char name[VFS_MAX_NAME];
-    vnode_t *dir = resolve_parent_dir(p, path, name, sizeof(name));
-    if (!dir || !dir->ops || !dir->ops->unlink) return -1;
-    if (!vfs_check_perm(dir, p->uid, p->gid, VFS_PERM_WRITE)) return -1; /* removing an entry mutates the DIRECTORY, so it's the dir's write bit that governs it, same as real Unix unlink() */
+    int err = 0;
+    vnode_t *dir = resolve_parent_dir(p, path, name, sizeof(name), &err);
+    if (!dir) return err;
+    if (!dir->ops || !dir->ops->unlink) return -EROFS;
+    if (!vfs_check_perm(dir, p->uid, p->gid, VFS_PERM_WRITE)) return -EACCES; /* removing an entry mutates the DIRECTORY, so it's the dir's write bit that governs it, same as real Unix unlink() */
     return dir->ops->unlink(dir, name);
 }
 
 int process_stat(process_t *p, const char *path, vfs_stat_t *out) {
     vnode_t *node = vfs_resolve_path_cwd(p->cwd, path);
-    if (!node) return -1;
+    if (!node) return -ENOENT;
 
     out->type = (uint64_t)node->type;
     out->size = 0;
@@ -484,29 +493,29 @@ int process_stat(process_t *p, const char *path, vfs_stat_t *out) {
 
 int process_chmod(process_t *p, const char *path, uint64_t mode) {
     vnode_t *node = vfs_resolve_path_cwd(p->cwd, path);
-    if (!node) return -1;
-    if (p->uid != 0 && p->uid != node->uid) return -1; /* only the owner or root may chmod */
+    if (!node) return -ENOENT;
+    if (p->uid != 0 && p->uid != node->uid) return -EPERM; /* only the owner or root may chmod */
     node->mode = mode & 0777; /* only the low 9 bits mean anything -- see vnode_t::mode's doc comment */
     return 0;
 }
 
 int process_chown(process_t *p, const char *path, uint64_t uid, uint64_t gid) {
     vnode_t *node = vfs_resolve_path_cwd(p->cwd, path);
-    if (!node) return -1;
-    if (p->uid != 0) return -1; /* root-only, see process.h's doc comment on process_chown */
+    if (!node) return -ENOENT;
+    if (p->uid != 0) return -EPERM; /* root-only, see process.h's doc comment on process_chown */
     node->uid = uid;
     node->gid = gid;
     return 0;
 }
 
 int process_setuid(process_t *p, uint64_t new_uid) {
-    if (p->uid != 0 && new_uid != p->uid) return -1;
+    if (p->uid != 0 && new_uid != p->uid) return -EPERM;
     p->uid = new_uid;
     return 0;
 }
 
 int process_setgid(process_t *p, uint64_t new_gid) {
-    if (p->uid != 0 && new_gid != p->gid) return -1;
+    if (p->uid != 0 && new_gid != p->gid) return -EPERM;
     p->gid = new_gid;
     return 0;
 }

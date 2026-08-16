@@ -64,6 +64,37 @@
 #define WTERMSIG(status)     ((status) & 0x7f)
 #define WIFSIGNALED(status)  (((status) & 0x7f) != 0 && ((status) & 0x7f) != 0x7f)
 #define WIFSTOPPED(status)   (((status) & 0xff) == 0x7f)
+
+/* Mirrors kernel/errno.h -- real Linux x86_64 errno values. A syscall
+ * wrapper below returning a negative number in (-4096, -1] means
+ * failure with that errno, e.g. sys_open() returning -ENOENT. These
+ * are just the named constants for checking against that -- there's no
+ * per-thread errno GLOBAL here (no `errno` variable that gets silently
+ * set on every call, no thread-local storage for it) the way real libc
+ * has. Check the syscall wrapper's own return value directly instead:
+ * `long r = sys_open(path); if (r == -ENOENT) ...`. Real errno
+ * semantics are Tier 4 territory, not needed for what this milestone
+ * is actually about (see kernel/errno.h's own doc comment). */
+#define EPERM     1
+#define ENOENT    2
+#define ESRCH     3
+#define EIO       5
+#define ENOEXEC   8
+#define EBADF     9
+#define ECHILD    10
+#define EAGAIN    11
+#define ENOMEM    12
+#define EACCES    13
+#define EEXIST    17
+#define ENOTDIR   20
+#define EISDIR    21
+#define EINVAL    22
+#define ENFILE    23
+#define EMFILE    24
+#define ENOSPC    28
+#define EROFS     30
+#define ENOSYS    38
+#define ENOTEMPTY 39
 #define WSTOPSIG(status)     (((status) >> 8) & 0xff)
 
 /* Mirrors vfs_stat_t in kernel/vfs.h exactly -- this is the

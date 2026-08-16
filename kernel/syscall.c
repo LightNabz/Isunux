@@ -7,6 +7,7 @@
 #include "vfs.h"
 #include "keyboard.h"
 #include "kutil.h"
+#include "errno.h"
 
 static void sys_exit(int code) {
     serial_print("[syscall] exit(");
@@ -45,10 +46,10 @@ static void sys_exit(int code) {
  * cooperative scheduler. */
 static long sys_kill(int target_pid, int sig) {
     process_t *target = process_find_by_pid(target_pid);
-    if (!target) return -1; /* no such process */
+    if (!target) return -ESRCH;
 
     int action = process_send_signal(target, sig);
-    if (action < 0) return -1; /* unrecognized signal */
+    if (action < 0) return -EINVAL; /* unrecognized signal */
     if (action == 1) { for (;;) yield(); } /* killed ourselves -- never return to userspace, same requirement sys_exit() has */
     if (action == 2) { yield(); } /* stopped ourselves -- parks here; resumes right after this once some later SIGCONT sets us back to TASK_READY */
     return 0;
@@ -241,7 +242,7 @@ void syscall_handler(interrupt_frame_t *frame) {
                 *(uint64_t *)addr = proc ? proc->fs_base : 0;
                 frame->rax = 0;
             } else {
-                frame->rax = (uint64_t)-1; /* unrecognized code -- ARCH_SET_GS/ARCH_GET_GS et al exist in real Linux but nothing here uses %gs for anything, so they're just not implemented */
+                frame->rax = (uint64_t)-EINVAL; /* unrecognized code -- ARCH_SET_GS/ARCH_GET_GS et al exist in real Linux but nothing here uses %gs for anything, so they're just not implemented */
             }
             break;
         }
@@ -281,7 +282,7 @@ void syscall_handler(interrupt_frame_t *frame) {
             serial_print("[syscall] unknown syscall number ");
             serial_print_dec(syscall_no);
             serial_print("\n");
-            frame->rax = (uint64_t)-1;
+            frame->rax = (uint64_t)-ENOSYS;
             break;
         }
     }

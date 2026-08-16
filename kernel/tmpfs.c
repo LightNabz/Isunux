@@ -2,6 +2,7 @@
 #include "pmm.h"
 #include "vmm.h"
 #include "kutil.h"
+#include "errno.h"
 
 #define TMPFS_MAX_NODES 128
 #define TMPFS_FILE_INITIAL_PAGES 1 /* starting size -- grows on demand now, see tmpfs_file_write */
@@ -51,7 +52,7 @@ static long tmpfs_file_write(vnode_t *node, const void *buf, uint64_t count, uin
              * the existing capacity instead of failing the call
              * outright, same "do what you can" spirit as process_brk()
              * hitting its own out-of-memory case */
-            if (offset > f->capacity) return -1;
+            if (offset > f->capacity) return -ENOMEM;
             uint64_t space = f->capacity - offset;
             uint64_t n = count < space ? count : space;
             const uint8_t *src = (const uint8_t *)buf;
@@ -97,14 +98,14 @@ static int tmpfs_dir_readdir(vnode_t *dir_vnode, int index, char *name_out, uint
 
 static int tmpfs_dir_create(vnode_t *dir_vnode, const char *name) {
     tmpfs_node_t *dir = (tmpfs_node_t *)dir_vnode;
-    if (tmpfs_dir_lookup(dir_vnode, name)) return -1; /* already exists */
-    return tmpfs_create_file(dir, name) ? 0 : -1;
+    if (tmpfs_dir_lookup(dir_vnode, name)) return -EEXIST;
+    return tmpfs_create_file(dir, name) ? 0 : -ENOMEM;
 }
 
 static int tmpfs_dir_mkdir(vnode_t *dir_vnode, const char *name) {
     tmpfs_node_t *dir = (tmpfs_node_t *)dir_vnode;
-    if (tmpfs_dir_lookup(dir_vnode, name)) return -1; /* already exists */
-    return tmpfs_create_dir(dir, name) ? 0 : -1;
+    if (tmpfs_dir_lookup(dir_vnode, name)) return -EEXIST;
+    return tmpfs_create_dir(dir, name) ? 0 : -ENOMEM;
 }
 
 static int tmpfs_dir_unlink(vnode_t *dir_vnode, const char *name) {
@@ -116,10 +117,10 @@ static int tmpfs_dir_unlink(vnode_t *dir_vnode, const char *name) {
         prev = child;
         child = child->next_sibling;
     }
-    if (!child) return -1; /* no such entry */
+    if (!child) return -ENOENT;
 
     if (child->vnode.type == VNODE_DIR && child->first_child != NULL) {
-        return -1; /* directory not empty -- same restriction real rmdir() has */
+        return -ENOTEMPTY;
     }
 
     /* unlink from the sibling chain */

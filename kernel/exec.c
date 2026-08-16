@@ -8,6 +8,7 @@
 #include "gdt.h"
 #include "kutil.h"
 #include "serial.h"
+#include "errno.h"
 
 #define MAX_EXEC_ARGS   8
 #define EXEC_ARG_MAXLEN 64
@@ -64,16 +65,20 @@ int64_t do_exec(interrupt_frame_t *frame, const char *path, char **user_argv, ch
      * under the OLD address space -- doesn't touch user memory at all,
      * this is pure VFS/tmpfs work */
     process_t *proc = process_current();
-    if (!proc) return -1;
+    if (!proc) return -EINVAL; /* a task with no process calling exec() makes no sense -- shouldn't be reachable in practice */
 
     vnode_t *node = vfs_resolve_path_cwd(proc->cwd, path);
-    if (!node || !node->ops || !node->ops->read) {
-        serial_print("[exec] path not found or not readable\n");
-        return -1;
+    if (!node) {
+        serial_print("[exec] path not found\n");
+        return -ENOENT;
+    }
+    if (!node->ops || !node->ops->read) {
+        serial_print("[exec] not a readable/executable file\n");
+        return -EACCES;
     }
     if (!vfs_check_perm(node, proc->uid, proc->gid, VFS_PERM_EXEC)) {
         serial_print("[exec] permission denied (missing execute bit)\n");
-        return -1;
+        return -EACCES;
     }
 
     uint64_t file_size = 0;
@@ -82,7 +87,7 @@ int64_t do_exec(interrupt_frame_t *frame, const char *path, char **user_argv, ch
     if (!exec_buf || file_size == 0) {
         serial_print("[exec] read failed or empty file\n");
         if (exec_buf) vfs_read_file_free(exec_buf, exec_buf_pages);
-        return -1;
+        return -ENOEXEC;
     }
 
     uint64_t new_pml4 = vmm_new_address_space();
@@ -96,13 +101,13 @@ int64_t do_exec(interrupt_frame_t *frame, const char *path, char **user_argv, ch
     vfs_read_file_free(exec_buf, exec_buf_pages); /* elf_load has already copied every PT_LOAD segment into its own pages by now -- this scratch copy is done */
     if (!ok) {
         serial_print("[exec] elf_load failed -- old process image untouched\n");
-        return -1;
+        return -ENOEXEC;
     }
 
     uint64_t stack_phys = pmm_alloc_pages(USER_STACK_PAGES);
     if (stack_phys == 0) {
         serial_print("[exec] out of memory for the new stack\n");
-        return -1;
+        return -ENOMEM;
     }
     uint64_t stack_base_vaddr = USER_STACK_TOP - (USER_STACK_PAGES * PAGE_SIZE);
     for (uint64_t p = 0; p < USER_STACK_PAGES; p++) {

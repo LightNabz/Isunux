@@ -5,6 +5,7 @@
 #include "pmm.h"
 #include "kutil.h"
 #include "serial.h"
+#include "errno.h"
 
 #define FORK_KSTACK_PAGES 4
 
@@ -17,12 +18,12 @@ extern void syscall_return_point(void);
 
 int64_t do_fork(interrupt_frame_t *parent_frame) {
     process_t *parent = process_current();
-    if (!parent) return -1;
+    if (!parent) return -EINVAL; /* a task with no process at all calling fork() makes no sense -- shouldn't be reachable in practice */
 
     process_t *child = process_alloc(parent->pid);
     if (!child) {
         serial_print("[fork] out of process slots\n");
-        return -1;
+        return -EAGAIN;
     }
 
     uint64_t child_pml4 = vmm_new_address_space();
@@ -32,7 +33,7 @@ int64_t do_fork(interrupt_frame_t *parent_frame) {
     task_t *child_task = task_alloc_raw("forked");
     if (!child_task) {
         serial_print("[fork] out of task slots\n");
-        return -1;
+        return -EAGAIN;
     }
     child_task->proc = child;
     child->task = child_task;
@@ -40,7 +41,7 @@ int64_t do_fork(interrupt_frame_t *parent_frame) {
     uint64_t kstack_phys = pmm_alloc_pages(FORK_KSTACK_PAGES);
     if (kstack_phys == 0) {
         serial_print("[fork] failed to allocate child kernel stack\n");
-        return -1;
+        return -ENOMEM;
     }
     child_task->stack_phys = kstack_phys;
     child_task->stack_pages = FORK_KSTACK_PAGES;
