@@ -1,56 +1,91 @@
 #pragma once
 #include "idt.h"
 
-#define SYS_WRITE 0
-#define SYS_EXIT  1
-#define SYS_OPEN  2
-#define SYS_READ  3
-#define SYS_CLOSE 4
-#define SYS_BRK   5
-#define SYS_FORK  6
-#define SYS_EXECVE  7
-#define SYS_WAITPID 8
-#define SYS_READDIR 9
-#define SYS_CHDIR   10
-#define SYS_GETCWD  11
-#define SYS_MKDIR   12
-#define SYS_CREATE  13
-#define SYS_UNLINK  14
-#define SYS_STAT    15
-#define SYS_DUP2    16
-#define SYS_PIPE    17
-#define SYS_KILL    18
-#define SYS_GETPID  19
-#define SYS_MMAP    20
-#define SYS_MUNMAP  21
-#define SYS_SET_FOREGROUND 22
-#define SYS_CHMOD   23
-#define SYS_CHOWN   24
-#define SYS_SETUID  25
-#define SYS_SETGID  26
-#define SYS_GETUID  27
-#define SYS_GETGID  28
-#define SYS_TTY_SET_RAW  29
-#define SYS_TTY_SET_ECHO 30
-#define SYS_ARGTEST      31 /* debug-only, see syscall.c -- exists purely to boot-verify the 6-arg widening below, not a real facility */
-#define SYS_ARCH_PRCTL   32
+/* Real Linux x86_64 syscall numbers -- 1f of the syscall-compat
+ * sequence (see things.md). This is necessary but deliberately NOT
+ * sufficient on its own: 1a-1e (entry mechanism, arg widening, auxv,
+ * FS.base, negative errno) are what actually determine whether a
+ * borrowed binary runs at all. Renumbering alone would just make a
+ * broken call land on the right case label.
+ *
+ * Two things fell out of getting this right that are bigger than a
+ * rename, both still part of this same milestone:
+ *   - open(2)'s real signature is (path, flags, mode), not our old
+ *     bare (path). SYS_CREATE is gone entirely -- real programs almost
+ *     never call legacy creat(2) (85), they call open() with O_CREAT,
+ *     same as this kernel's own SYS_OPEN case does now (see fcntl.h
+ *     for the real O_* flag values, process_open() in process.c for
+ *     the implementation).
+ *   - mmap(2)'s real signature is 6 args (adds fd, offset), which our
+ *     dispatch now reads and validates instead of silently ignoring.
+ *
+ * set_tid_address/set_robust_list are safe no-op-ish stubs -- musl's
+ * _start calls both unconditionally even for a single-threaded
+ * program, and neither one means anything without a real threading
+ * model underneath (there isn't one -- every task on this kernel IS a
+ * whole process). exit_group is wired to the exact same handler as
+ * exit -- distinct in real Linux (one thread vs the whole process),
+ * identical here since there's no "one thread of a process" concept
+ * to distinguish them. */
+#define SYS_READ           0
+#define SYS_WRITE          1
+#define SYS_OPEN           2
+#define SYS_CLOSE          3
+#define SYS_STAT           4
+#define SYS_MMAP           9
+#define SYS_MUNMAP         11
+#define SYS_BRK            12
+#define SYS_PIPE           22
+#define SYS_DUP2           33
+#define SYS_GETPID         39
+#define SYS_FORK           57
+#define SYS_EXECVE         59
+#define SYS_EXIT           60
+#define SYS_WAITPID        61 /* real name: wait4 */
+#define SYS_KILL           62
+#define SYS_GETCWD         79
+#define SYS_CHDIR          80
+#define SYS_MKDIR          83
+#define SYS_UNLINK         87
+#define SYS_CHMOD          90
+#define SYS_CHOWN          92
+#define SYS_GETUID         102
+#define SYS_GETGID         104
+#define SYS_SETUID         105
+#define SYS_SETGID         106
+#define SYS_ARCH_PRCTL     158
+#define SYS_READDIR        217 /* real name: getdents64 */
+#define SYS_SET_TID_ADDRESS 218
+#define SYS_EXIT_GROUP     231
+#define SYS_SET_ROBUST_LIST 273
 
-/* Real Linux's arch_prctl "code" values -- used as-is even though our
- * own syscall NUMBER above isn't Linux's yet (that's 1f, deliberately
- * last). These aren't syscall numbers, just an argument value, so
- * there's no reason not to already match what real musl/glibc will
- * actually pass once 1g gets here. */
+/* ISUNUX-native extensions with no real Linux equivalent at all -- real
+ * job control and raw-mode terminal handling both go through ioctl(2)
+ * (TIOCSPGRP, TCSETS/termios), which this kernel doesn't implement.
+ * Parked at a deliberately out-of-band range so these can never collide
+ * with a real syscall number now or after some future kernel version
+ * adds more of them -- a borrowed binary simply never knows these
+ * numbers exist, only ISUNUX's own recompiled mini_libc programs call
+ * them. A borrowed shell wanting real job control is a known, separate
+ * gap this doesn't attempt to close (Toybox's basic utils don't need
+ * it at all, so it isn't a 1g blocker). */
+#define SYS_SET_FOREGROUND 1000
+#define SYS_TTY_SET_RAW    1001
+#define SYS_TTY_SET_ECHO   1002
+
+/* Real Linux's arch_prctl "code" values -- an argument value, not a
+ * syscall number, so there was never a reason to wait on these. */
 #define ARCH_SET_FS 0x1002
 #define ARCH_GET_FS 0x1003
 
 /* Real Linux prot/flags values, same "why invent our own" reasoning as
  * the signal numbers above. Only what our anonymous-only mmap()
  * actually uses is defined -- there's no file-backed mapping yet (needs
- * Tier 2's real filesystem), so fd/offset aren't part of our syscall's
- * ABI at all, and MAP_SHARED doesn't mean anything without a file or
- * without real fork()-time mapping-list bookkeeping to share against,
- * so it's not defined here either -- every mapping this kernel creates
- * behaves like MAP_PRIVATE regardless of what's passed. */
+ * Tier 2's real filesystem), so MAP_SHARED doesn't mean anything
+ * without a file or without real fork()-time mapping-list bookkeeping
+ * to share against, so it's not defined here either -- every mapping
+ * this kernel creates behaves like MAP_PRIVATE regardless of what's
+ * passed. */
 #define PROT_READ  1
 #define PROT_WRITE 2
 #define PROT_EXEC  4

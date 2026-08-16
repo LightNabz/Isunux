@@ -1,41 +1,55 @@
 #pragma once
 
-#define SYS_WRITE 0
-#define SYS_EXIT  1
-#define SYS_OPEN  2
-#define SYS_READ  3
-#define SYS_CLOSE 4
-#define SYS_BRK   5
-#define SYS_FORK  6
-#define SYS_EXECVE  7
-#define SYS_WAITPID 8
-#define SYS_READDIR 9
-#define SYS_CHDIR   10
-#define SYS_GETCWD  11
-#define SYS_MKDIR   12
-#define SYS_CREATE  13
-#define SYS_UNLINK  14
-#define SYS_STAT    15
-#define SYS_DUP2    16
-#define SYS_PIPE    17
-#define SYS_KILL    18
-#define SYS_GETPID  19
-#define SYS_MMAP    20
-#define SYS_MUNMAP  21
-#define SYS_SET_FOREGROUND 22
-#define SYS_CHMOD   23
-#define SYS_CHOWN   24
-#define SYS_SETUID  25
-#define SYS_SETGID  26
-#define SYS_GETUID  27
-#define SYS_GETGID  28
-#define SYS_TTY_SET_RAW  29
-#define SYS_TTY_SET_ECHO 30
-#define SYS_ARGTEST      31 /* debug-only, see kernel/syscall.c */
-#define SYS_ARCH_PRCTL   32
+/* Real Linux x86_64 syscall numbers -- mirrors kernel/syscall.h exactly,
+ * see there for the full reasoning (1f of the syscall-compat sequence). */
+#define SYS_READ           0
+#define SYS_WRITE          1
+#define SYS_OPEN           2
+#define SYS_CLOSE          3
+#define SYS_STAT           4
+#define SYS_MMAP           9
+#define SYS_MUNMAP         11
+#define SYS_BRK            12
+#define SYS_PIPE           22
+#define SYS_DUP2           33
+#define SYS_GETPID         39
+#define SYS_FORK           57
+#define SYS_EXECVE         59
+#define SYS_EXIT           60
+#define SYS_WAITPID        61
+#define SYS_KILL           62
+#define SYS_GETCWD         79
+#define SYS_CHDIR          80
+#define SYS_MKDIR          83
+#define SYS_UNLINK         87
+#define SYS_CHMOD          90
+#define SYS_CHOWN          92
+#define SYS_GETUID         102
+#define SYS_GETGID         104
+#define SYS_SETUID         105
+#define SYS_SETGID         106
+#define SYS_ARCH_PRCTL     158
+#define SYS_READDIR        217
+#define SYS_EXIT_GROUP     231
+
+/* ISUNUX-native extensions, deliberately out-of-band -- see
+ * kernel/syscall.h's doc comment for why these can't be real numbers. */
+#define SYS_SET_FOREGROUND 1000
+#define SYS_TTY_SET_RAW    1001
+#define SYS_TTY_SET_ECHO   1002
 
 #define ARCH_SET_FS 0x1002
 #define ARCH_GET_FS 0x1003
+
+/* Real Linux open(2) flag values -- mirrors kernel/fcntl.h. */
+#define O_ACCMODE 0x0003
+#define O_RDONLY  0x0000
+#define O_WRONLY  0x0001
+#define O_RDWR    0x0002
+#define O_CREAT   0x0040
+#define O_EXCL    0x0080
+#define O_TRUNC   0x0200
+#define O_APPEND  0x0400
 
 /* Mirrors kernel/syscall.h -- see there for why only these three exist. */
 #define PROT_READ  1
@@ -85,6 +99,7 @@
 #define EAGAIN    11
 #define ENOMEM    12
 #define EACCES    13
+#define ENODEV    19
 #define EEXIST    17
 #define ENOTDIR   20
 #define EISDIR    21
@@ -222,7 +237,16 @@ static inline long sys_write(int fd, const void *buf, unsigned long len) {
 }
 
 static inline long sys_open(const char *path) {
-    return syscall1(SYS_OPEN, (long)path);
+    return syscall3(SYS_OPEN, (long)path, O_RDONLY, 0);
+}
+
+/* The real open(2) signature -- needed for anything that wants to
+ * write, create, truncate, or append. Plain sys_open() above is just
+ * this with flags=O_RDONLY, kept as its own function since almost
+ * every existing caller only ever wanted read-only access anyway and
+ * "open a path" reads better than "open a path with zero flags". */
+static inline long sys_open3(const char *path, int flags, unsigned long mode) {
+    return syscall3(SYS_OPEN, (long)path, flags, (long)mode);
 }
 
 static inline long sys_read(int fd, void *buf, unsigned long len) {
@@ -285,8 +309,21 @@ static inline long sys_mkdir(const char *path) {
     return syscall1(SYS_MKDIR, (long)path);
 }
 
+/* There's no SYS_CREATE syscall number anymore -- real programs create
+ * files via open(O_CREAT), same as this now does. O_EXCL (not
+ * O_TRUNC) is what preserves this function's ORIGINAL contract: fails
+ * with -EEXIST if the name is already taken, rather than real creat()'s
+ * always-succeeds-and-truncates behavior -- existing callers (bin/touch,
+ * for instance) specifically rely on the fail-if-exists behavior, so
+ * this keeps their meaning unchanged even though the mechanism
+ * underneath is completely different now. The fd is closed before
+ * returning -- callers only ever checked this for success/failure, never
+ * used the return value as an fd, so leaving one open here would just
+ * leak it. */
 static inline long sys_create(const char *path) {
-    return syscall1(SYS_CREATE, (long)path);
+    long fd = sys_open3(path, O_CREAT | O_EXCL | O_WRONLY, 0644);
+    if (fd >= 0) syscall1(SYS_CLOSE, fd);
+    return fd;
 }
 
 static inline long sys_unlink(const char *path) {
@@ -375,7 +412,12 @@ static inline long sys_tty_set_echo(int enable) {
  * flags/length that isn't supported) -- real mmap() returns
  * (void*)-1 = MAP_FAILED for the same case, same bit pattern either way. */
 static inline long sys_mmap(unsigned long addr_hint, unsigned long length, int prot, int flags) {
-    return syscall4(SYS_MMAP, (long)addr_hint, (long)length, prot, flags);
+    /* fd=-1, offset=0 -- the only combination this kernel's mmap()
+     * accepts anyway (anonymous-only, see process_mmap()'s doc comment
+     * in process.h). Explicit here rather than leaving r8/r9 to whatever
+     * garbage happened to be in those registers, now that the kernel
+     * dispatch actually reads them. */
+    return syscall6(SYS_MMAP, (long)addr_hint, (long)length, prot, flags, -1, 0);
 }
 
 static inline long sys_munmap(unsigned long addr, unsigned long length) {
@@ -389,17 +431,6 @@ static inline long sys_munmap(unsigned long addr, unsigned long length) {
  * the shell does once it's back at the prompt. */
 static inline long sys_set_foreground(const int *pids, int count) {
     return syscall2(SYS_SET_FOREGROUND, (long)pids, count);
-}
-
-/* Debug-only -- see kernel/syscall.c's SYS_ARGTEST case. Passes 6
- * fixed sentinel values through the full 6-register syscall ABI and
- * returns a 6-bit mask of which ones the kernel actually saw correctly
- * -- 0b111111 (63) means every register survived the round trip. */
-static inline long sys_argtest(void) {
-    return syscall6(SYS_ARGTEST,
-        (long)0x1111111111111111ULL, (long)0x2222222222222222ULL,
-        (long)0x3333333333333333ULL, (long)0x4444444444444444ULL,
-        (long)0x5555555555555555ULL, (long)0x6666666666666666ULL);
 }
 
 /* Not something mini_libc's own crt0/programs ever call themselves --

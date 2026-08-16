@@ -339,15 +339,14 @@ static int resolve_command(const char *cmd, char *out_path, uint64_t out_size) {
     return -1;
 }
 
-/* Runs in the child, right after fork(), before execve(). ">" creates
- * the target fresh (sys_unlink then sys_create) rather than opening
- * in place, since there's no O_TRUNC/truncate() yet -- this is how a
- * real truncate-to-empty gets achieved with the ops we already have. */
+/* Runs in the child, right after fork(), before execve(). ">" used to
+ * fake O_TRUNC via sys_unlink()+sys_create() by hand, back when there
+ * was no real O_TRUNC to ask for -- 1f gave process_open() a real
+ * O_CREAT|O_TRUNC, so this is now exactly what every other shell's `>`
+ * redirect does under the hood too, not a workaround anymore. */
 static int setup_redirections(stage_t *s) {
     if (s->redirect_out) {
-        sys_unlink(s->redirect_out); /* best-effort -- fine if it didn't already exist */
-        sys_create(s->redirect_out);
-        long fd = sys_open(s->redirect_out);
+        long fd = sys_open3(s->redirect_out, O_CREAT | O_WRONLY | O_TRUNC, 0644);
         if (fd < 0) {
             printf("sh: cannot open %s for writing\n", s->redirect_out);
             return -1;

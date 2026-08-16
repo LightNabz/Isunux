@@ -12,6 +12,7 @@ typedef struct {
     vnode_t *node;
     uint64_t offset;
     int used;
+    int access_mode; /* O_RDONLY/O_WRONLY/O_RDWR (fcntl.h) -- what this fd was actually opened for, enforced by process_read()/process_write() below. Real dup2()/fork() semantics: both COPY this alongside the node pointer, since they're sharing the same open file description, not creating a fresh one */
 } fd_entry_t;
 
 typedef struct process {
@@ -64,7 +65,16 @@ void process_init(process_t *p, uint64_t pml4_phys, uint64_t heap_start);
  * scope cut, not an oversight. */
 void process_clone_into(process_t *dst, process_t *src, uint64_t new_pml4_phys);
 
-int process_open(process_t *p, const char *path);
+/* Real open(2) semantics now, not just a bare path: flags is the real
+ * O_* bitmask (fcntl.h), mode is only meaningful alongside O_CREAT
+ * (accepted for ABI compat -- a borrowed binary's open() calls always
+ * pass one -- but not yet actually applied to the created file's
+ * permission bits, which stay whatever create() already defaults to).
+ * O_TRUNC on an existing file is implemented via the same unlink+
+ * recreate trick the shell's `>` redirect used to do by hand -- no real
+ * truncate() exists yet, so this IS truncation for now, not a shortcut
+ * around it. */
+int process_open(process_t *p, const char *path, int flags, uint64_t mode);
 long process_read(process_t *p, int fd, void *buf, uint64_t count);
 long process_write(process_t *p, int fd, const void *buf, uint64_t count);
 int process_close(process_t *p, int fd);
@@ -117,7 +127,22 @@ uint64_t process_brk(process_t *p, uint64_t new_brk);
  * mapping itself. The arena only ever grows; munmap doesn't return
  * space to it for reuse, same "grows but never reclaims its own
  * bookkeeping" scope cut process_brk() already has. */
-uint64_t process_mmap(process_t *p, uint64_t addr_hint, uint64_t length, int prot, int flags);
+/* Maps `length` bytes (rounded up to whole pages) of fresh, zeroed,
+ * anonymous memory somewhere past the heap and the stack (see
+ * MMAP_ARENA_BASE in process.c), with the requested PROT_* permissions,
+ * and returns the resulting address. addr_hint is ignored -- no
+ * MAP_FIXED support, this always places the mapping itself. fd/offset
+ * are accepted (real mmap(2) always passes them) but only -1/0 is
+ * supported -- anything else means a file-backed mapping, which this
+ * kernel doesn't implement, and gets a real -ENODEV rather than being
+ * silently misinterpreted. Failure is a real negative errno now
+ * (-EINVAL for zero length, -ENODEV for file-backed, -ENOMEM if
+ * allocation runs out partway through), NOT a bare 0 -- an early
+ * version of this function returned literal 0 on every failure path,
+ * which is indistinguishable from a successful mapping AT address 0 to
+ * anything checking the real (-4096,-1] error-range convention 1e
+ * established; fixed once 1f started widening this signature anyway. */
+uint64_t process_mmap(process_t *p, uint64_t addr_hint, uint64_t length, int prot, int flags, int fd, uint64_t offset);
 
 /* Unmaps and frees `length` worth of pages (rounded up) starting at
  * addr. Silently skips any page in the range that isn't actually

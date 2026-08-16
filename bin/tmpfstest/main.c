@@ -26,7 +26,7 @@ int main(void) {
         return 1;
     }
 
-    long wfd = sys_open(path);
+    long wfd = sys_open3(path, O_WRONLY, 0);
     if (wfd < 0) {
         printf("tmpfstest: open for write failed\n");
         return 1;

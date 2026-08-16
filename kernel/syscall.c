@@ -69,7 +69,9 @@ void syscall_handler(interrupt_frame_t *frame) {
         }
         case SYS_OPEN: {
             const char *path = (const char *)frame->rdi;
-            frame->rax = (uint64_t)(long)process_open(proc, path);
+            int flags = (int)frame->rsi;
+            uint64_t mode = frame->rdx;
+            frame->rax = (uint64_t)(long)process_open(proc, path, flags, mode);
             break;
         }
         case SYS_READ: {
@@ -132,11 +134,6 @@ void syscall_handler(interrupt_frame_t *frame) {
             frame->rax = (uint64_t)(int64_t)process_mkdir(proc, path);
             break;
         }
-        case SYS_CREATE: {
-            const char *path = (const char *)frame->rdi;
-            frame->rax = (uint64_t)(int64_t)process_create(proc, path);
-            break;
-        }
         case SYS_UNLINK: {
             const char *path = (const char *)frame->rdi;
             frame->rax = (uint64_t)(int64_t)process_unlink(proc, path);
@@ -170,7 +167,9 @@ void syscall_handler(interrupt_frame_t *frame) {
             uint64_t length = frame->rsi;
             int prot = (int)frame->rdx;
             int flags = (int)frame->r10;
-            frame->rax = process_mmap(proc, addr_hint, length, prot, flags);
+            int fd = (int)frame->r8;
+            uint64_t offset = frame->r9;
+            frame->rax = process_mmap(proc, addr_hint, length, prot, flags, fd, offset);
             break;
         }
         case SYS_MUNMAP: {
@@ -256,27 +255,39 @@ void syscall_handler(interrupt_frame_t *frame) {
             frame->rax = 0;
             break;
         }
-        case SYS_ARGTEST: {
-            /* Debug-only: proves all 6 registers of the real syscall
-             * ABI survive mini_libc's syscall6() -> syscall_entry's
-             * manual frame build -> here, unmolested and in the right
-             * slots. Each bit of the return value corresponds to one
-             * argument matching its expected sentinel -- 0b111111 (63)
-             * means all six arrived correctly; any 0 bit says exactly
-             * which register to go stare at. */
-            uint64_t result = 0;
-            if (frame->rdi == 0x1111111111111111ULL) result |= (1 << 0);
-            if (frame->rsi == 0x2222222222222222ULL) result |= (1 << 1);
-            if (frame->rdx == 0x3333333333333333ULL) result |= (1 << 2);
-            if (frame->r10 == 0x4444444444444444ULL) result |= (1 << 3);
-            if (frame->r8  == 0x5555555555555555ULL) result |= (1 << 4);
-            if (frame->r9  == 0x6666666666666666ULL) result |= (1 << 5);
-            frame->rax = result;
+        case SYS_SET_TID_ADDRESS: {
+            /* musl's _start calls this unconditionally even for a
+             * single-threaded program -- there's no thread concept
+             * below "process" on this kernel for it to actually mean
+             * anything, so this is a real no-op, not a stub standing in
+             * for missing functionality. Real set_tid_address() returns
+             * the caller's own tid; a process's tid and pid are the
+             * same number here (see SYS_GETPID), so that's what goes back. */
+            frame->rax = (uint64_t)(proc ? proc->pid : 0);
+            break;
+        }
+        case SYS_SET_ROBUST_LIST: {
+            /* Same reasoning as SYS_SET_TID_ADDRESS -- musl's _start
+             * calls this too, and the robust-futex-list it's registering
+             * only matters if a thread can die holding a lock another
+             * thread is waiting on, which needs real threads to happen
+             * at all. Real set_robust_list() returns 0 on success. */
+            frame->rax = 0;
             break;
         }
         case SYS_EXIT: {
             sys_exit((int)frame->rdi);
             break; /* unreachable -- sys_exit never returns */
+        }
+        case SYS_EXIT_GROUP: {
+            /* Distinct from exit() in real Linux (one thread vs the
+             * whole process) -- identical here, since every task on
+             * this kernel already IS a whole process, there's no
+             * "one thread of a process" for the two to actually differ
+             * on. musl's _start calls exit_group, not exit, so this
+             * needs its own case even though the handler is the same. */
+            sys_exit((int)frame->rdi);
+            break;
         }
         default: {
             serial_print("[syscall] unknown syscall number ");

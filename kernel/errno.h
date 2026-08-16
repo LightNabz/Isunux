@@ -16,6 +16,7 @@
 #define EPERM   1  /* operation permitted only to the owner or root */
 #define ENOENT  2  /* no such file or directory */
 #define ESRCH   3  /* no such process -- kill()/etc. targeting a pid that doesn't exist */
+#define ENODEV  19 /* file-backed mmap() -- not supported, this kernel only has anonymous mappings */
 #define ENOEXEC 8  /* not a valid/loadable executable -- empty file, malformed ELF, etc. */
 #define EIO     5  /* real I/O error -- ata.c/fat.c internal failures surface as this, since nothing above them can currently tell WHY the disk failed, only that it did */
 #define EAGAIN  11 /* a fixed-size kernel resource pool (processes, tasks) is exhausted right now -- real fork()'s own convention for this, distinct from ENOMEM's "allocation itself failed" */

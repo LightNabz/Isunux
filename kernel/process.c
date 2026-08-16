@@ -1,5 +1,6 @@
 #include "process.h"
 #include "errno.h"
+#include "fcntl.h"
 #include "kutil.h"
 #include "pmm.h"
 #include "vmm.h"
@@ -51,6 +52,7 @@ void process_init(process_t *p, uint64_t pml4_phys, uint64_t heap_start) {
         p->fds[fd].node = devfs_console_vnode();
         p->fds[fd].offset = 0;
         p->fds[fd].used = 1;
+        p->fds[fd].access_mode = O_RDWR; /* a terminal is bidirectional */
     }
 }
 
@@ -225,11 +227,12 @@ uint64_t process_brk(process_t *p, uint64_t new_brk) {
     return p->heap_end;
 }
 
-uint64_t process_mmap(process_t *p, uint64_t addr_hint, uint64_t length, int prot, int flags) {
+uint64_t process_mmap(process_t *p, uint64_t addr_hint, uint64_t length, int prot, int flags, int fd, uint64_t offset) {
     (void)addr_hint; /* always ignored -- no MAP_FIXED support, we always place the mapping ourselves */
+    (void)offset; /* only meaningful for a file-backed mapping, which is rejected below */
 
-    if (length == 0) return 0;
-    if (!(flags & MAP_ANONYMOUS)) return 0; /* no file-backed mapping yet -- needs Tier 2's real filesystem */
+    if (length == 0) return -EINVAL;
+    if (!(flags & MAP_ANONYMOUS) || fd != -1) return -ENODEV; /* no file-backed mapping yet -- needs Tier 2's real filesystem. Real mmap() infers file-backed from MAP_ANONYMOUS being absent; checking fd too catches a caller that sets MAP_ANONYMOUS but also (incorrectly, or on purpose) passes a real fd, same as real Linux itself rejects that combination */
 
     uint64_t pages = (length + PAGE_SIZE - 1) / PAGE_SIZE;
     uint64_t base = p->mmap_next;
@@ -252,7 +255,7 @@ uint64_t process_mmap(process_t *p, uint64_t addr_hint, uint64_t length, int pro
                     *pte = 0;
                 }
             }
-            return 0;
+            return -ENOMEM;
         }
         k_memset((uint8_t *)(vmm_hhdm_offset() + phys), 0, PAGE_SIZE); /* real mmap() guarantees zeroed pages -- pmm_alloc_page() gives no such guarantee itself (freed pages aren't scrubbed, so a recycled page can carry a previous owner's leftover contents), so this has to be explicit here */
         vmm_map_4k_in(p->pml4_phys, base + i * PAGE_SIZE, phys, pte_flags);
@@ -278,16 +281,65 @@ int process_munmap(process_t *p, uint64_t addr, uint64_t length) {
     return 0;
 }
 
-int process_open(process_t *p, const char *path) {
+int process_open(process_t *p, const char *path, int flags, uint64_t mode) {
+    (void)mode; /* real chmod-at-creation-time bits -- accepted for ABI compat (a borrowed binary's open() always passes one alongside O_CREAT) but not yet actually applied; a freshly created file gets whatever default create() already sets, same as before this milestone */
+
+    int access_mode = flags & O_ACCMODE;
     vnode_t *node = vfs_resolve_path_cwd(p->cwd, path);
-    if (!node) return -ENOENT;
-    if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_READ)) return -EACCES;
+    int just_created = 0;
+
+    if (!node) {
+        if (!(flags & O_CREAT)) return -ENOENT;
+        int err = process_create(p, path);
+        if (err < 0) return err;
+        node = vfs_resolve_path_cwd(p->cwd, path);
+        if (!node) return -EIO; /* just created it -- this "shouldn't" happen */
+        just_created = 1;
+    } else if ((flags & O_CREAT) && (flags & O_EXCL)) {
+        return -EEXIST; /* real open()'s "I specifically want to be the creator" mode */
+    }
+
+    /* O_TRUNC on something that already existed. No real truncate()
+     * exists in this codebase -- this IS the mechanism, not a shortcut
+     * around one, formalizing into the kernel what the shell's `>`
+     * redirect used to do by hand at the userland level (unlink, then
+     * recreate). A brand new file from the O_CREAT branch above is
+     * already empty, so there's nothing to truncate there. */
+    if (!just_created && (flags & O_TRUNC) && access_mode != O_RDONLY) {
+        int derr = process_unlink(p, path);
+        if (derr < 0) return derr;
+        int cerr = process_create(p, path);
+        if (cerr < 0) return cerr;
+        node = vfs_resolve_path_cwd(p->cwd, path);
+        if (!node) return -EIO;
+    }
+
+    int wants_read = (access_mode == O_RDONLY || access_mode == O_RDWR);
+    int wants_write = (access_mode == O_WRONLY || access_mode == O_RDWR);
+    if (wants_read && !vfs_check_perm(node, p->uid, p->gid, VFS_PERM_READ)) return -EACCES;
+    if (wants_write && !vfs_check_perm(node, p->uid, p->gid, VFS_PERM_WRITE)) return -EACCES;
 
     for (int fd = 3; fd < MAX_FDS; fd++) {
         if (!p->fds[fd].used) {
+            uint64_t start_offset = 0;
+            if ((flags & O_APPEND) && node->ops && node->ops->stat) {
+                /* every write() is SUPPOSED to seek to EOF first under
+                 * O_APPEND, atomically, for the lifetime of the fd --
+                 * this only sets the STARTING offset to today's EOF
+                 * once, at open time. Correct for the overwhelmingly
+                 * common single-writer case; a second, concurrent
+                 * writer appending to the same fd table entry at the
+                 * same time could still interleave wrong. Documented
+                 * scope cut, not an oversight -- getting this fully
+                 * right needs a per-write EOF re-check this kernel's
+                 * vnode_ops->write() interface doesn't support yet. */
+                uint64_t size = 0;
+                if (node->ops->stat(node, &size) == 0) start_offset = size;
+            }
             p->fds[fd].node = node;
-            p->fds[fd].offset = 0;
+            p->fds[fd].offset = start_offset;
             p->fds[fd].used = 1;
+            p->fds[fd].access_mode = access_mode;
             return fd;
         }
     }
@@ -312,6 +364,7 @@ int process_chdir(process_t *p, const char *path) {
 
 long process_read(process_t *p, int fd, void *buf, uint64_t count) {
     if (fd < 0 || fd >= MAX_FDS || !p->fds[fd].used) return -EBADF;
+    if (p->fds[fd].access_mode == O_WRONLY) return -EBADF; /* opened write-only -- real Unix's own EBADF for this exact case */
     vnode_t *node = p->fds[fd].node;
     if (!node->ops || !node->ops->read) return -EBADF;
     if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_READ)) return -EACCES;
@@ -323,6 +376,7 @@ long process_read(process_t *p, int fd, void *buf, uint64_t count) {
 
 long process_write(process_t *p, int fd, const void *buf, uint64_t count) {
     if (fd < 0 || fd >= MAX_FDS || !p->fds[fd].used) return -EBADF;
+    if (p->fds[fd].access_mode == O_RDONLY) return -EBADF; /* opened read-only */
     vnode_t *node = p->fds[fd].node;
     if (!node->ops || !node->ops->write) return -EBADF;
     if (!vfs_check_perm(node, p->uid, p->gid, VFS_PERM_WRITE)) return -EACCES;
